@@ -14,6 +14,10 @@ import (
 
 const XURL = "https://api.x.com/2/tweets/search/recent"
 
+// Twitter's Snowflake epoch and 22 low worker/sequence bits:
+// https://github.com/twitter-archive/snowflake/blob/snowflake-2010/src/main/scala/com/twitter/service/snowflake/IdWorker.scala
+const xEpochMillis int64 = 1288834974657
+
 // Include early disclosures that do not yet have a CVE assignment. Operators
 // should scope this further to relevant products and researchers if needed.
 const DefaultXQuery = `(CVE OR "zero-day" OR "0day" OR "security advisory" OR "remote code execution" OR "actively exploited") -is:retweet`
@@ -75,6 +79,20 @@ func (s *X) Poll(ctx context.Context, cursor string) (Result, error) {
 	// indexing delay at the newest end of the recent-search window.
 	end := s.now().UTC().Add(-30 * time.Second).Truncate(time.Second)
 	start := end.Add(-s.lookback)
+	until := ""
+	if cursor != "" {
+		// The live API rejects mixing ID bounds with time bounds. An exclusive
+		// Snowflake boundary preserves the same fixed end time across pages.
+		elapsed := end.UnixMilli() - xEpochMillis
+		if elapsed <= 0 || elapsed >= 1<<41 {
+			return unchanged(cursor, errors.New("X end time is outside the Snowflake timestamp range"))
+		}
+		upper := uint64(elapsed) << 22
+		if upper <= high {
+			return unchanged(cursor, errors.New("X since_id is not before the fixed until_id; cursor retained"))
+		}
+		until = strconv.FormatUint(upper, 10)
+	}
 	next := ""
 	seenTokens := map[string]bool{}
 	seenItems := map[string]bool{}
@@ -82,14 +100,18 @@ func (s *X) Poll(ctx context.Context, cursor string) (Result, error) {
 	for page := 0; page < s.maxPages; page++ {
 		u := *s.u
 		q := u.Query()
+		for _, name := range []string{"start_time", "end_time", "since_id", "until_id", "next_token", "pagination_token"} {
+			q.Del(name)
+		}
 		q.Set("query", s.query)
 		q.Set("max_results", "100")
 		q.Set("tweet.fields", "created_at,author_id,entities")
-		q.Set("end_time", end.Format(time.RFC3339))
 		if cursor != "" {
 			q.Set("since_id", cursor)
+			q.Set("until_id", until)
 		} else {
 			q.Set("start_time", start.Format(time.RFC3339))
+			q.Set("end_time", end.Format(time.RFC3339))
 		}
 		if next != "" {
 			q.Set("next_token", next)

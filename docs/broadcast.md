@@ -178,6 +178,13 @@ polling the same state directory. Run one active hub for the paid X subscription
 independent state directories or machines are independent ingesters and would
 consume additional API usage. Source URL/query changes use a new cursor namespace.
 
+X's first poll uses a fixed `start_time`/`end_time` window. Subsequent polls use
+`since_id` and an exclusive `until_id` derived from the same 30-second-delayed
+end time using Twitter's Snowflake epoch and timestamp bits. This avoids the
+live API's rejection of mixed ID/time bounds while keeping pagination stable.
+Invalid bounds or failed pages retain the previous cursor and publish no partial
+batch.
+
 X recent search itself covers only seven days. RSS feeds may retain less history.
 The hub cannot reconstruct upstream history already dropped during an outage.
 Backups of an older hub state can also move its advertised latest sequence behind

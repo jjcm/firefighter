@@ -15,6 +15,7 @@ var testNow = time.Date(2026, 10, 24, 10, 0, 0, 0, time.UTC)
 
 func TestXPaginationCommitAndEarlyDisclosure(t *testing.T) {
 	calls := 0
+	nowCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.Header.Get("Authorization") != "Bearer secret" {
@@ -23,8 +24,12 @@ func TestXPaginationCommitAndEarlyDisclosure(t *testing.T) {
 		if r.URL.Query().Get("since_id") != "100" {
 			t.Error("since_id changed during pagination")
 		}
-		if r.URL.Query().Get("end_time") != "2026-10-24T09:59:30Z" {
-			t.Error("unstable end time")
+		if r.URL.Query().Has("start_time") || r.URL.Query().Has("end_time") {
+			http.Error(w, "Invalid use of ID bounds in conjunction with time bounds", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Query().Get("until_id") != "2113933390771126272" {
+			t.Error("incorrect or unstable exclusive Snowflake boundary")
 		}
 		if r.URL.Query().Get("next_token") == "" {
 			fmt.Fprint(w, `{"data":[{"id":"300","text":"zero-day in widget, no CVE assigned","created_at":"2026-10-24T09:00:00Z"}],"meta":{"result_count":1,"next_token":"page2"}}`)
@@ -33,7 +38,10 @@ func TestXPaginationCommitAndEarlyDisclosure(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	s, err := NewX(XConfig{URL: server.URL, BearerToken: "secret", Now: func() time.Time { return testNow }})
+	s, err := NewX(XConfig{URL: server.URL + "?start_time=stale&end_time=stale", BearerToken: "secret", Now: func() time.Time {
+		nowCalls++
+		return testNow.Add(time.Duration(nowCalls-1) * time.Minute)
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +49,7 @@ func TestXPaginationCommitAndEarlyDisclosure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || len(result.Items) != 2 || result.Cursor != "300" {
+	if calls != 2 || nowCalls != 1 || len(result.Items) != 2 || result.Cursor != "300" {
 		t.Fatalf("unexpected result: %+v calls=%d", result, calls)
 	}
 	if len(result.Items[0].CVEs) != 0 || result.Items[0].Trust != "unverified" {
@@ -49,6 +57,71 @@ func TestXPaginationCommitAndEarlyDisclosure(t *testing.T) {
 	}
 	if !strings.Contains(result.Items[1].Body, "https://vendor.example/advisory") {
 		t.Fatal("expanded evidence URL absent")
+	}
+}
+
+func TestXInitialPaginationUsesOnlyFixedTimeBounds(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		q := r.URL.Query()
+		if q.Has("since_id") || q.Has("until_id") || q.Has("pagination_token") {
+			http.Error(w, "mixed ID and time bounds", http.StatusBadRequest)
+			return
+		}
+		if q.Get("start_time") != "2026-10-24T08:59:30Z" || q.Get("end_time") != "2026-10-24T09:59:30Z" {
+			t.Errorf("initial time bounds changed: %v", q)
+		}
+		if calls == 1 {
+			if q.Has("next_token") {
+				t.Error("first page used a stale pagination token")
+			}
+			fmt.Fprint(w, `{"data":[{"id":"300","text":"advisory","created_at":"2026-10-24T09:00:00Z"}],"meta":{"result_count":1,"next_token":"page2"}}`)
+		} else {
+			if q.Get("next_token") != "page2" {
+				t.Error("missing next pagination token")
+			}
+			fmt.Fprint(w, `{"meta":{"result_count":0}}`)
+		}
+	}))
+	defer server.Close()
+	s, err := NewX(XConfig{URL: server.URL + "?since_id=stale&until_id=stale&next_token=stale&pagination_token=stale", BearerToken: "secret", Lookback: time.Hour, Now: func() time.Time { return testNow }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Poll(context.Background(), "")
+	if err != nil || calls != 2 || len(result.Items) != 1 || result.Cursor != "300" {
+		t.Fatalf("initial pagination failed: %+v calls=%d err=%v", result, calls, err)
+	}
+}
+
+func TestXInvalidIDBoundsRetainCursorWithoutRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("invalid ID bounds reached the upstream API")
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	for _, tc := range []struct {
+		name, cursor string
+		now          time.Time
+	}{
+		{"equal bounds", "2113933390771126272", testNow},
+		{"future cursor", "2113933390771126273", testNow},
+		{"invalid cursor", "not-an-id", testNow},
+		{"zero cursor", "0", testNow},
+		{"before epoch", "100", time.UnixMilli(xEpochMillis)},
+		{"timestamp overflow", "100", time.UnixMilli(xEpochMillis + 1<<41).Add(time.Minute)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := NewX(XConfig{URL: server.URL, BearerToken: "secret", Now: func() time.Time { return tc.now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := s.Poll(context.Background(), tc.cursor)
+			if err == nil || result.Cursor != tc.cursor || len(result.Items) != 0 {
+				t.Fatalf("invalid bounds changed the checkpoint: %+v err=%v", result, err)
+			}
+		})
 	}
 }
 
