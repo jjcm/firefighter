@@ -533,7 +533,7 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 				}
 			}
 			if failed && len(action.Rollback) > 0 && ctx.Err() == nil {
-				rollback := protocol.Action{ID: action.ID + "-rollback", Kind: "command", Argv: action.Rollback, Dir: action.Dir, TimeoutSeconds: action.TimeoutSeconds, Reason: "Recover after failed action or verification: " + action.Reason, Mutates: true}
+				rollback := protocol.Action{ID: action.ID + "-rollback", Kind: "command", Argv: action.Rollback, Dir: action.Dir, TimeoutSeconds: action.TimeoutSeconds, Reason: "Run recovery for action " + action.ID, Mutates: true}
 				if _, err = e.executePhase(ctx, in, turn, rollback, "rollback", action.ID); err != nil {
 					return err
 				}

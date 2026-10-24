@@ -103,6 +103,11 @@ func (a *API) Decide(ctx context.Context, request protocol.Request) (protocol.De
 		"response_format": format,
 		"stream":          false,
 	}
+	if !a.config.JSONMode && a.endpoint == "https://openrouter.ai/api/v1/chat/completions" {
+		// Schema support varies across OpenRouter's upstream providers. Do not
+		// route a schema-constrained request to one that ignores its parameters.
+		payload["provider"] = map[string]any{"require_parameters": true}
+	}
 	if a.config.Backend == "anthropic" {
 		payload = map[string]any{
 			"model":         a.config.Model,

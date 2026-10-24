@@ -91,8 +91,11 @@ func TestNotificationsPersistIntentAndVerificationOutcomes(t *testing.T) {
 							t.Errorf("verification describes the original mutation: %s", v.Summary)
 						}
 					case "rollback":
-						if v.Details["mutates_source"] != "rollback_contract" || v.Details["parent_action_id"] != "patch" || v.Details["mutates"] != true {
+						if v.Details["mutates_source"] != "rollback_contract" || v.Details["parent_action_id"] != "patch" || v.Details["parent_mutates"] != true || v.Details["mutates"] != true {
 							t.Errorf("rollback lacks intended behavior or parent: %+v", v)
+						}
+						if v.Summary != "Run recovery for action patch" || strings.Contains(v.Summary, "Patch affected service") {
+							t.Errorf("rollback repeats the forward change as its recovery description: %s", v.Summary)
 						}
 					}
 					if v.Type == "action_started" {

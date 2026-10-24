@@ -53,8 +53,13 @@ type Delivery struct {
 // restarts, independently of any individual advisory's reporting policy.
 type AssessmentHealth struct {
 	ConsecutiveFailures  int       `json:"consecutive_failures"`
+	EpisodeFailures      int       `json:"episode_failures,omitempty"`
+	ConsecutiveSuccesses int       `json:"consecutive_successes,omitempty"`
+	LastFailureAt        time.Time `json:"last_failure_at,omitempty"`
 	LastReportedFailures int       `json:"last_reported_failures"`
 	LastReportedAt       time.Time `json:"last_reported_at,omitempty"`
+	ReportQueued         bool      `json:"report_queued,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty"`
 }
 
 type State struct {
@@ -119,6 +124,12 @@ func Open(dir string) (*Store, *State, error) {
 		if e = json.Unmarshal(b, st); e != nil {
 			return fail(fmt.Errorf("read durable state: %w", e))
 		}
+		if st.AssessmentHealth.UpdatedAt.IsZero() {
+			// Older state lacks an explicit health checkpoint timestamp. Its
+			// file timestamp separates historical health events from a newer
+			// append that survived a crash before this state file was saved.
+			st.AssessmentHealth.UpdatedAt = fi.ModTime().UTC()
+		}
 	} else if !os.IsNotExist(err) {
 		return fail(err)
 	}
@@ -139,6 +150,7 @@ func Open(dir string) (*Store, *State, error) {
 		return fail(err)
 	}
 	queued := map[string]protocol.Event{}
+	healthReportQueued := false
 	scanner := bufio.NewScanner(s.audit)
 	scanner.Buffer(make([]byte, 65536), 16<<20)
 	for scanner.Scan() {
@@ -166,7 +178,44 @@ func Open(dir string) (*Store, *State, error) {
 			if in := st.Incidents[event.IncidentID]; in != nil {
 				in.ReportedActivity = true
 			}
+			switch event.Type {
+			case "assessment_health_error":
+				healthReportQueued = true
+			case "assessment_health_recovered":
+				healthReportQueued = false
+			}
+			// Health notifications are appended before the state checkpoint.
+			// Replay a newer aggregate marker so a crash cannot discard its
+			// cooldown or cause a second recovery for an already closed episode.
+			if event.Time.After(st.AssessmentHealth.UpdatedAt) {
+				switch event.Type {
+				case "assessment_health_error":
+					var aggregate struct {
+						Details struct {
+							FailureCount int `json:"failure_count"`
+						} `json:"details"`
+					}
+					if err := json.Unmarshal(r.Data, &aggregate); err != nil || aggregate.Details.FailureCount < 1 {
+						return fail(errors.New("invalid assessment health report in audit"))
+					}
+					st.AssessmentHealth = AssessmentHealth{
+						ConsecutiveFailures: 1, EpisodeFailures: aggregate.Details.FailureCount,
+						LastFailureAt: event.Time, LastReportedFailures: aggregate.Details.FailureCount,
+						LastReportedAt: event.Time, ReportQueued: true, UpdatedAt: event.Time,
+					}
+				case "assessment_health_recovered":
+					st.AssessmentHealth = AssessmentHealth{LastReportedAt: event.Time, UpdatedAt: event.Time}
+				}
+			}
 			queued[event.ID] = event
+		case "event":
+			// A recovery can be recorded locally when reporting has since been
+			// disabled or filtered. It still closes the previous health episode;
+			// its older queued errors must not mark a later local-only episode.
+			var event protocol.Event
+			if json.Unmarshal(r.Data, &event) == nil && event.Type == "assessment_health_recovered" {
+				healthReportQueued = false
+			}
 		case "report_delivered":
 			var ack struct {
 				ID string `json:"id"`
@@ -180,6 +229,9 @@ func Open(dir string) (*Store, *State, error) {
 	if err = scanner.Err(); err != nil {
 		return fail(err)
 	}
+	// Derive the external-report obligation from actual queued reports and
+	// episode boundaries, including legacy checkpoints without ReportQueued.
+	st.AssessmentHealth.ReportQueued = st.AssessmentHealth.LastReportedFailures > 0 && healthReportQueued
 	// Replay the durable outbox across the audit/state crash window. Preserve retry
 	// scheduling from state, while the audit determines delivery completion.
 	var outbox []Delivery

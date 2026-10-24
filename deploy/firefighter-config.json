@@ -21,7 +21,7 @@
     "model": "deepseek/deepseek-v4.1-flash-1017",
     "api_key_env": "OPENROUTER_API_KEY",
     "timeout_seconds": 180,
-    "json_mode": true
+    "json_mode": false
   },
   "sources": [
     {

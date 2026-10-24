@@ -13,7 +13,7 @@ import termios
 from urllib.parse import urlsplit
 
 PROVIDERS = {
-    '1': ('OpenRouter', 'api', 'https://openrouter.ai/api/v1', 'OPENROUTER_API_KEY', 'deepseek/deepseek-v4.1-flash-1017', True),
+    '1': ('OpenRouter', 'api', 'https://openrouter.ai/api/v1', 'OPENROUTER_API_KEY', 'deepseek/deepseek-v4.1-flash-1017', False),
     '2': ('OpenAI', 'api', 'https://api.openai.com/v1', 'OPENAI_API_KEY', 'gpt-6.1-sol', False),
     '3': ('Anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'ANTHROPIC_API_KEY', 'claude-sonnet-5-5', False),
 }

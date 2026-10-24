@@ -43,14 +43,23 @@ func TestReportContextRetainsIdentityAndSeparatesCheckFromRemediation(t *testing
 func TestReportAggregateAssessmentHealth(t *testing.T) {
 	for _, typ := range []string{"assessment_health_error", "assessment_health_recovered"} {
 		event := safeEvent(protocol.Event{Type: typ, Summary: "Applicability assessment health", Details: map[string]any{
-			"health_scope": "advisory_applicability", "failure_count": json.Number("13"),
+			"health_scope": "advisory_applicability", "failure_count": json.Number("13"), "failure_count_scope": "health_episode", "resolved_count": 3,
 		}}, Redactor())
-		if event.Details["health_scope"] != "advisory_applicability" || event.Details["failure_count"] != int64(13) {
+		if event.Details["health_scope"] != "advisory_applicability" || event.Details["failure_count"] != int64(13) || event.Details["failure_count_scope"] != "health_episode" || event.Details["resolved_count"] != int64(3) {
 			t.Fatalf("aggregate health metadata lost: %+v", event.Details)
 		}
-		if !strings.Contains(formatEvent(event), "Consecutive unresolved assessments: 13") {
+		label := "Unresolved assessments in this health episode: 13"
+		if typ == "assessment_health_recovered" {
+			label = "Unresolved assessments before recovery: 13"
+		}
+		message := formatEvent(event)
+		if !strings.Contains(message, label) || !strings.Contains(message, "Resolved assessments supporting recovery: 3") || strings.Contains(message, "Consecutive unresolved") {
 			t.Fatal("aggregate health report lost the bounded failure count")
 		}
+	}
+	legacy := safeEvent(protocol.Event{Type: "assessment_health_recovered", Details: map[string]any{"failure_count": 8}}, Redactor())
+	if message := formatEvent(legacy); !strings.Contains(message, "Unresolved assessments reported: 8") || strings.Contains(message, "Consecutive unresolved") {
+		t.Fatal("legacy recovery describes a still-active failure streak")
 	}
 }
 

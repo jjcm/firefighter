@@ -393,6 +393,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn('Local only selected',out)
         self.assertEqual(config['llm']['api_key_env'],'OPENROUTER_API_KEY')
         self.assertEqual(config['llm']['model'],'deepseek/deepseek-v4.1-flash-1017')
+        self.assertFalse(config['llm']['json_mode'])
         self.assertTrue(any(e[0]=='git' and 'fetch' in e and e[-1]==self.f.revision for e in self.f.events()))
         self.assertEqual(len([e for e in self.f.events() if e[:2]==['go','build']]),2)
         self.assertFalse(any(e[0]=='curl' for e in self.f.events()))
@@ -412,6 +413,10 @@ class InstallTests(unittest.TestCase):
         self.assertTrue((self.f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
     def test_upgrade_without_tty_preserves_local_configuration(self):
         original_config,original_env=self.f.configured();folder=self.f.stage/'etc/firefighter'
+        # Older installations and explicit JSON-object opt-outs remain intact.
+        legacy=json.loads(original_config);legacy['llm']['json_mode']=True
+        original_config=json.dumps(legacy,indent=4)+'\n'
+        (folder/'config.json').write_text(original_config)
         for kind in ('bootstrap','repo'):
             with self.subTest(kind=kind):
                 code,out=self.f.run(kind);self.assertEqual(code,0,out)

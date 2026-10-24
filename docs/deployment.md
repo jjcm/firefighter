@@ -227,10 +227,12 @@ New setup asks for the provider, model, and an API key with echo disabled:
 | Anthropic | `claude-sonnet-5-5` | `anthropic` | `ANTHROPIC_API_KEY` |
 
 The model can be overridden. OpenRouter uses `https://openrouter.ai/api/v1` with
-JSON-object mode; OpenAI uses `https://api.openai.com/v1` with strict structured
-output. Anthropic uses `https://api.anthropic.com/v1` and its native Messages API,
+schema-constrained output (`json_mode: false`) and requires upstream support for
+the requested parameters. OpenAI uses `https://api.openai.com/v1` with strict
+structured output. Anthropic uses `https://api.anthropic.com/v1` and its native Messages API,
 with `json_mode` disabled. [Planner details](../internal/planner/README.md) describe
-provider output validation.
+provider output validation. Upgrades preserve existing configuration, including
+an existing `json_mode: true`; they do not silently change a provider's mode.
 
 The installer can install missing `git`, `curl`, and `python3` using apt, dnf, yum,
 pacman, or zypper. It uses an installed Go version meeting `go.mod` or downloads a
@@ -286,7 +288,7 @@ bootstrap defaults; substitute the independently verified publisher key:
     "model": "deepseek/deepseek-v4.1-flash-1017",
     "api_key_env": "OPENROUTER_API_KEY",
     "timeout_seconds": 180,
-    "json_mode": true
+    "json_mode": false
   }
 }
 ```
@@ -298,8 +300,12 @@ credential in `/etc/firefighter/firefighter.env`, with mode `0600`. Each client
 uses its own model access and makes local decisions. Shared-feed clients need no
 X or NVD key for intake and do not poll those upstream feeds directly.
 
-`json_mode` requests JSON-object responses while retaining the same strict local
-decision validation, command limits, and mandatory mutation verification. The
+`json_mode: false` requests schema-constrained responses. At the official
+OpenRouter endpoint the client also sends `provider.require_parameters: true`.
+Operators may explicitly set `json_mode: true` for JSON-object responses when a
+provider lacks schema support; that mode does not enforce the decision's shape.
+Both modes retain the same strict local decision validation, command limits, and
+mandatory mutation verification, with no automatic downgrade or output repair. The
 responder runs as root without approval prompts. The unprivileged public hub has
 no API for changing those settings or submitting executable actions.
 
