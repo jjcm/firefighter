@@ -24,7 +24,7 @@ The public quickstart targets the domain:
 curl -fsSL https://firefighter.sh | sudo bash
 ```
 
-DNS and the origin certificate are active, but Cloudflare's managed edge certificate is still pending validation and public domain HTTPS is not ready. Until it is, use `curl -fsSL https://45.76.243.18 | sudo bash`. `/install.sh` remains the explicit installer path for clients that do not send curl's User-Agent.
+Domain HTTPS is active through Cloudflare Full (Strict), with a Let's Encrypt origin certificate and a successful renewal dry run. The IP command `curl -fsSL https://45.76.243.18 | sudo bash` remains available for compatibility. `/install.sh` remains the explicit installer path for clients that do not send curl's User-Agent.
 
 The landing page gives the experimental-use warning and a link to the FAQ. The exact first-install risk acknowledgment appears in the interactive installer, not as a second step on the page. The prompt reads `/dev/tty`, so piped script input cannot answer it. No terminal or a mismatched sentence aborts before writes. After successful startup, the acknowledgment is stored in root-owned mode `0600` at `/etc/firefighter/install-risk-acknowledgment`; a valid record skips it on upgrades. Runtime operation still has no approval prompts.
 
@@ -41,7 +41,7 @@ The same-origin distribution routes are limited to:
 
 The public key download is a distribution convenience, not independent proof of authenticity. Verify the pin over a separate trusted channel. The installer is a separate download initiated by an operator; executable instructions never enter the signed notice protocol.
 
-The [FAQ](https://45.76.243.18/faq) describes autonomous operation, costs, and limitations. Model credentials stay in each client's root-only environment file. Relevant local observations are sent to the selected model API, with best-effort secret redaction.
+The [FAQ](https://firefighter.sh/faq) describes autonomous operation, costs, and limitations. Model credentials stay in each client's root-only environment file. Relevant local observations are sent to the selected model API, with best-effort secret redaction.
 
 ## Hosting and checks
 

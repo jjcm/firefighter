@@ -1,8 +1,9 @@
 # Deployment
 
-The public deployment uses [https://45.76.243.18/](https://45.76.243.18/) for the
-notice board, [FAQ](https://45.76.243.18/faq), [signed notices](https://45.76.243.18/api/v1/notices), and
-[source health](https://45.76.243.18/api/v1/status). The status endpoint is the
+The public deployment uses [https://firefighter.sh/](https://firefighter.sh/) for the
+notice board, [FAQ](https://firefighter.sh/faq), [signed notices](https://firefighter.sh/api/v1/notices), and
+[source health](https://firefighter.sh/api/v1/status). The existing
+[IP endpoint](https://45.76.243.18/) remains available for compatibility. The status endpoint is the
 source of truth for upstream availability. The hosted deployment and default hub
 configuration use Ubuntu notices, CISA KEV, and NVD. Paid X intake is currently
 disabled to stop API spend; the integration remains available as an opt-in source.
@@ -17,11 +18,11 @@ command output, credentials, or private incident records to the hub.
 
 | Component | Deployment choice |
 | --- | --- |
-| Public endpoint | `https://45.76.243.18/` |
-| TLS termination | nginx, ports 80 and 443; public links use IPv4 |
+| Public endpoint | `https://firefighter.sh/`; `https://45.76.243.18/` remains available |
+| TLS termination | Cloudflare Full (Strict) for the domain; nginx on origin ports 80 and 443 |
 | IP certificate | Certbot short-lived profile, lineage `firefighter-ip` |
 | Certificate files | `/etc/letsencrypt/live/firefighter-ip/fullchain.pem` and `privkey.pem` |
-| Domain origin certificate | Let's Encrypt lineage `firefighter-domain`, expires January 22, 2027; Cloudflare edge certificate pending |
+| Domain origin certificate | Let's Encrypt lineage `firefighter-domain`, expires January 22, 2027; automatic renewal configured and tested |
 | Hub listener | `127.0.0.1:8090`, accessible through nginx |
 | Hub service account | `firefighter-hub`, without root remediation privileges |
 | Hub executable | `/usr/local/bin/firefighter-hub` |
@@ -177,13 +178,12 @@ can instead distribute a CA bundle and configure the client's absolute `ca_file`
 path. Hostname/IP matching remains enabled, and the Ed25519 publisher pin remains
 required independently of TLS.
 
-### Domain certificate (origin active; edge pending)
+### Domain HTTPS
 
-DNS delegation and public resolution were working by 14:03 UTC (21:03 Bangkok
-time) on October 24, 2026. Cloudflare's nameservers are `aria.ns.cloudflare.com`
-and `ridge.ns.cloudflare.com`; the apex A record points to `45.76.243.18` with
-proxying enabled and SSL/TLS mode Full (Strict). Public DNS returns Cloudflare
-edge addresses rather than the origin IP.
+Public HTTPS at `firefighter.sh` is active. Cloudflare's nameservers are
+`aria.ns.cloudflare.com` and `ridge.ns.cloudflare.com`; the apex A record points
+to `45.76.243.18` with proxying enabled and SSL/TLS mode Full (Strict). Public DNS
+returns Cloudflare edge addresses rather than the origin IP.
 
 The origin now has a Let's Encrypt certificate in lineage `firefighter-domain`,
 expiring January 22, 2027, and the [domain nginx configuration](../deploy/nginx-domain.conf)
@@ -191,12 +191,12 @@ is active. Direct requests using `--resolve firefighter.sh:443:45.76.243.18`
 pass normal certificate verification, and curl at the root returns the same
 bytes as the public bootstrap.
 
-Public domain HTTPS still fails at Cloudflare's edge. Its managed Universal SSL
-certificate for `firefighter.sh` and `*.firefighter.sh` shows **Pending Validation
-(TXT)**; Cloudflare says it handles validation without operator action. The
-remaining blocker is this edge certificate, not DNS delegation or the origin
-certificate. Use the working IP URL while activation is pending. The original
-IP vhost and `firefighter-ip` certificate remain enabled.
+At 14:10 UTC (21:10 Bangkok time) on October 24, 2026, a public HTTPS request
+through Cloudflare returned the exact bootstrap bytes with status 200,
+`Content-Type: text/plain`, `Cache-Control: no-store`, `Vary: User-Agent`, and
+`CF-Cache-Status: DYNAMIC`. Cloudflare manages the edge certificate; Certbot
+renews the origin certificate. The original IP vhost and `firefighter-ip`
+certificate remain enabled for existing clients.
 
 For reprovisioning, the origin's HTTP challenge route serves
 `/.well-known/acme-challenge/` from `/var/lib/letsencrypt`. Verify public reachability
@@ -222,7 +222,8 @@ sudo certbot renew --cert-name firefighter-domain --dry-run --no-random-sleep-on
 Skip the symlink command if it already exists. Keep the original IP vhost and
 certificate lineage enabled so existing clients continue to work. Keep
 `certbot.timer` enabled for both lineages; the domain deploy hook validates and
-reloads nginx after successful renewal. The domain renewal dry run passed on October 24, 2026. A dry run does not run deploy hooks unless
+reloads nginx after successful renewal. The domain renewal dry run passed on
+October 24, 2026. A dry run does not run deploy hooks unless
 `--run-deploy-hooks` is also supplied. No hub restart or client configuration change
 is required. See the [Certbot renewal documentation](https://eff-certbot.readthedocs.io/en/stable/using.html#renewing-certificates).
 
@@ -280,9 +281,8 @@ the domain quickstart is:
 curl -fsSL https://firefighter.sh | sudo bash
 ```
 
-The origin certificate is active, but Cloudflare's edge certificate is still
-pending validation. Until public domain HTTPS works, use
-`curl -fsSL https://45.76.243.18 | sudo bash`.
+The IP command `curl -fsSL https://45.76.243.18 | sudo bash` remains available
+for compatibility.
 `/install.sh` remains the explicit fallback when using a different User-Agent;
 opening `/` in a browser shows the website.
 
