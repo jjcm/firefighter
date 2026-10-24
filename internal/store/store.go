@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jjcm/firefighter/internal/intel"
+	"github.com/jjcm/firefighter/internal/memory"
 	"github.com/jjcm/firefighter/internal/protocol"
 )
 
@@ -50,6 +51,7 @@ type State struct {
 	Incidents      map[string]*Incident   `json:"incidents"`
 	Outbox         []Delivery             `json:"outbox"`
 	LastHostReview time.Time              `json:"last_host_review"`
+	Memory         memory.State           `json:"memory"`
 }
 type Record struct {
 	Time       time.Time       `json:"time"`
@@ -109,6 +111,11 @@ func Open(dir string) (*Store, *State, error) {
 	if st.Version != 1 || st.Sources == nil || st.Incidents == nil {
 		return fail(errors.New("unsupported or incomplete durable state"))
 	}
+	// Persisted observations remain useful context, but a process restart may
+	// follow a reboot or an interrupted host mutation. Refresh the inventory.
+	now := time.Now().UTC()
+	st.Memory.Invalidate("process restarted; refresh host inventory before relying on cached state", now)
+	st.Memory.Prune(now)
 	s.audit, err = privateOpen(filepath.Join(dir, "audit.jsonl"), os.O_CREATE|os.O_RDWR|os.O_APPEND)
 	if err != nil {
 		return fail(err)

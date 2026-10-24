@@ -9,9 +9,66 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jjcm/firefighter/internal/host"
 	"github.com/jjcm/firefighter/internal/intel"
+	"github.com/jjcm/firefighter/internal/memory"
 	"github.com/jjcm/firefighter/internal/protocol"
 )
+
+func TestHostMemorySurvivesRestartButInventoryMustRefresh(t *testing.T) {
+	dir := t.TempDir()
+	s, state, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	state.Memory.Inventory = &memory.Inventory{Snapshot: host.Snapshot{CollectedAt: now, Hostname: "remembered-host", Packages: []host.Package{{Name: "nginx", Version: "1.2.3", Manager: "apt"}}}}
+	state.Memory.Apply([]protocol.MemoryUpdate{{Operation: "upsert", Key: "nginx.location", Text: "nginx serves /srv/www", Evidence: []string{"read nginx configuration"}, Tags: []string{"nginx"}, TTLHours: 24}}, "incident-1", now)
+	state.Memory.Notes["expired"] = memory.Note{Key: "expired", Text: "no longer valid", UpdatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)}
+	if err := s.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, recovered, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	note := recovered.Memory.Notes["nginx.location"]
+	if len(recovered.Memory.Notes) != 1 || note.IncidentID != "incident-1" || note.Text != "nginx serves /srv/www" || note.Tags[0] != "nginx" || !note.UpdatedAt.Equal(now) {
+		t.Fatalf("persistent notes or expiry lost on restart: %+v", recovered.Memory.Notes)
+	}
+	inventory := recovered.Memory.Inventory
+	if inventory == nil || inventory.Fresh(time.Now()) || inventory.InvalidatedAt.IsZero() || !strings.Contains(inventory.InvalidatedReason, "restarted") {
+		t.Fatalf("restart treated cached inventory as current: %+v", inventory)
+	}
+	if inventory.Snapshot.Hostname != "remembered-host" || inventory.Snapshot.Packages[0].Version != "1.2.3" || !inventory.Snapshot.CollectedAt.Equal(now) {
+		t.Fatalf("restart discarded prior host evidence: %+v", inventory)
+	}
+}
+
+func TestStateWithoutHostMemoryStillLoads(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"version":1,"sources":{"hub":{"cursor":"42"}},"incidents":{},"outbox":[],"last_host_review":"0001-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, state, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if state.Sources["hub"].Cursor != "42" || state.Memory.Inventory != nil || len(state.Memory.Notes) != 0 {
+		t.Fatalf("old state did not retain cursors and empty memory: %+v", state)
+	}
+	state.Memory.Apply([]protocol.MemoryUpdate{{Operation: "upsert", Key: "first-note", Text: "first observation after upgrade", TTLHours: 1}}, "new-incident", time.Now())
+	if len(state.Memory.Notes) != 1 {
+		t.Fatal("upgraded state could not accept new notes")
+	}
+	if err := s.Save(state); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestExclusiveLockAndStatePermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")

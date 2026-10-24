@@ -12,6 +12,7 @@ This is a working initial implementation with fixture-tested execution and recov
 
 - **Intake:** a central hub supports X/Twitter recent search, Ubuntu Security Notices, CISA's Known Exploited Vulnerabilities catalog, NVD, and configurable vendor RSS/Atom feeds. Clients verify signed notice batches using a pinned Ed25519 public key. Standalone direct polling is also available. Social disclosures without CVE IDs are included, and intake runs independently of long scans and patches.
 - **Assessment:** inventories packages, processes, listeners, services, containers, and available scanners; asks the model to compare actual exposure and CVE-specific evidence. It distinguishes `unknown`, `not_affected`, `exposed`, `suspected_compromise`, `confirmed_compromise`, and `remediated`.
+- **Memory:** keeps a local inventory cache, recalls relevant earlier investigations, and lets the model maintain expiring host notes across CVEs and restarts.
 - **Response:** the model can execute arbitrary local root commands, update packages, edit application code, run tests/scans, restart services, contain an incident, and invoke credential-rotation hooks. Mutating plans require a verification command. Failed actions stop the batch, run a supplied rollback, and trigger reassessment.
 - **Continuous operation:** systemd restart, independent intake and reporting workers, serialized mutations, deadline/process-group cancellation, persistent queues/cursors, interrupted-action reassessment, fair scheduling, and a durable notification outbox.
 - **Reporting:** local structured journal and hash-chained audit records, plus a configurable [Grok Bot reporting plugin](plugins/grokbot/README.md) that calls a routine webhook. Reporting failures do not pause remediation.
@@ -155,6 +156,25 @@ Terminal `not_affected`/verified `remediated` items are retained as lightweight 
 State is stored under `/var/lib/firefighter` with mode `0700`; files use `0600`. An action intent is fsynced before execution. On restart, interrupted incidents are reassessed rather than blindly replayed. Incomplete trailing audit writes are preserved separately before recovery; an invalid complete hash chain stops execution. Notifications are reconstructed from durable queued/delivered audit records if a state checkpoint was interrupted.
 
 The audit is append-only and **not automatically deleted or rotated**. Monitor disk usage, preserve it externally, and archive state/audit together while the service is stopped; do not apply `copytruncate` log rotation to the audit. Hash chaining detects accidental damage and partial modification, not a malicious root rewriting the whole history. Keep backups and external telemetry outside the defended host.
+
+## Host memory
+
+Each new investigation receives shared context from the client's root-only `/var/lib/firefighter/state.json`:
+
+- **Inventory:** packages and versions, distribution, services, processes, listeners, containers, and scanner availability. The cache lasts up to five minutes. Every executed command invalidates it before execution, including verification, rollback, and commands labeled read-only. The next model turn refreshes it. Daemon restarts and periodic host reviews also force a refresh. Failed or incomplete collection stays explicit in the request.
+- **Previous investigations:** up to eight summaries, prioritizing matching CVEs and software names, then recency. These include assessment, evidence, status, errors, follow-up, and timestamps. Existing incident records are available immediately after upgrading; no migration or extra model call is needed.
+- **Host notes:** the model can remember application locations, deployment details, earlier findings, and lessons from failed fixes. Notes have stable keys, supporting evidence, tags, an originating incident, and an expiry of 1 hour to 30 days. It can update or delete notes. At most 128 are retained and 16 are selected for a request. Expired notes are excluded.
+
+Notes are accepted only in a decision with no pending actions, after the model has had a chance to inspect results. A remediation claim without successful verification cannot write notes. Known credential redaction runs before inventory and notes are stored; it is best-effort, so treat local state as sensitive. Memory is untrusted historical context, never operator policy or proof that a version, exposure, or successful fix is still current. The model is instructed to recheck relevant live state before changes.
+
+Inspect the cache and notes without stopping the service:
+
+```sh
+sudo firefighter memory
+sudo firefighter status
+```
+
+Memory is stored on the client and included in requests to its configured LLM provider. It is not uploaded to the notice hub. Updates appear in the local audit and their count appears in assessment reports. There is no vector database, separate memory service, or additional LLM request just to maintain memory. Memory adds context to normal requests, so it can increase their input-token cost.
 
 ## Development and validation
 

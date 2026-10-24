@@ -283,7 +283,7 @@ func (e *Engine) enqueueHostReview() error {
 			return nil
 		}
 	}
-	item := intel.Item{ID: "host-review-" + now.Format(time.RFC3339Nano), Source: "local-host", Title: "Periodic host exposure and compromise assessment", Body: "Assess this Ubuntu host and locally deployed applications. Run available vulnerability and compromise checks, investigate suspicious persistence or authentication evidence, check pending security updates and restarts, and repair verified exposure. No incoming advisory is required to find existing problems. Missing scans mean unknown coverage, not clean status.", Trust: "local", PublishedAt: now}
+	item := intel.Item{ID: "host-review-" + now.Format(time.RFC3339Nano), Source: "local-host", Title: "Periodic host exposure and compromise assessment", Body: "Assess this Linux host and locally deployed applications. Run available vulnerability and compromise checks, investigate suspicious persistence or authentication evidence, check pending security updates and restarts, and repair verified exposure. No incoming advisory is required to find existing problems. Missing scans mean unknown coverage, not clean status.", Trust: "local", PublishedAt: now}
 	key := store.Key(item)
 	e.State.Incidents[key] = &store.Incident{ID: key, Item: item, Status: "pending", UpdatedAt: now}
 	e.State.LastHostReview = now
@@ -372,30 +372,37 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 	if err := e.emit("assessment_started", in.ID, in.Item.Title, nil); err != nil {
 		return err
 	}
-	snapshot, collectErr := e.Collect(ctx)
 	notes := append([]string(nil), in.RecoveryNotes...)
 	if in.LastError != "" {
 		notes = append(notes, "Previous assessment failed: "+e.Redact(in.LastError))
-	}
-	if collectErr != nil {
-		notes = append(notes, "Inventory incomplete: "+e.Redact(collectErr.Error()))
 	}
 	verified := false
 	for round := 0; round < e.Config.MaxRounds; round++ {
 		if ctx.Err() != nil {
 			return e.finish(in, "deferred", "Assessment time limit reached or daemon stopping; further work scheduled", ctx.Err(), nil)
 		}
+		snapshot, inventoryInfo, err := e.inventory(ctx, round == 0 && in.Item.Source == "local-host")
+		if err != nil {
+			return err // A failed checkpoint must stop execution.
+		}
 		e.mu.Lock()
 		history := modelHistory(in.History)
+		memory := e.memoryContextLocked(in, inventoryInfo)
 		e.mu.Unlock()
 		instructions := e.Config.Instructions + fmt.Sprintf("\nExecution limits: command timeout_seconds must be 0..%d; the total incident time budget is %d seconds. You must assess execution results in another turn before declaring remediation complete.", min(e.Config.CommandTimeoutSeconds, 1800), e.Config.IncidentTimeoutSeconds)
-		req := protocol.Request{IncidentID: in.ID, Host: snapshot, Intel: in.Item, History: history, Instructions: instructions, RotationHooks: e.Config.RotationHooks, RecoveryNotes: notes, RoundsRemaining: e.Config.MaxRounds - round}
+		req := protocol.Request{IncidentID: in.ID, Host: snapshot, Intel: in.Item, History: history, Memory: memory, Instructions: instructions, RotationHooks: e.Config.RotationHooks, RecoveryNotes: notes, RoundsRemaining: e.Config.MaxRounds - round}
 		decision, err := e.Planner.Decide(ctx, req)
 		if err != nil {
 			return e.finish(in, "deferred", "Planner unavailable; assessment will retry", err, nil)
 		}
 		if len(decision.Actions) > e.Config.MaxActionsPerRound {
 			return e.finish(in, "deferred", "Planner exceeded action budget", errors.New("too many planned actions"), nil)
+		}
+		if err := protocol.ValidateMemoryUpdates(decision.MemoryUpdates); err != nil {
+			return e.finish(in, "deferred", "Planner returned invalid memory updates", err, nil)
+		}
+		if len(decision.MemoryUpdates) > 0 && len(decision.Actions) > 0 {
+			return e.finish(in, "deferred", "Memory updates require observed results, without pending actions", errors.New("memory updates with pending actions"), nil)
 		}
 		for _, action := range decision.Actions {
 			if err = e.Runner.Validate(action); err != nil {
@@ -482,6 +489,13 @@ func (e *Engine) execute(ctx context.Context, in *store.Incident, turn int, acti
 	}
 	e.mu.Lock()
 	err := e.Store.Append("action_intent", in.ID, e.cleanDecision(protocol.Decision{Actions: []protocol.Action{action}}).Actions[0])
+	if err == nil {
+		// Even a command labeled read-only may change state. Invalidate before
+		// execution so crashes, failed commands, and rollbacks cannot leave a
+		// seemingly fresh inventory behind.
+		e.State.Memory.Invalidate("Local command may have changed host state", time.Now().UTC())
+		err = e.Store.Save(e.State)
+	}
 	e.mu.Unlock()
 	if err != nil {
 		return protocol.ActionResult{}, err
@@ -525,6 +539,13 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 		details["assessment"] = decision.Assessment
 		details["evidence"] = decision.Evidence
 		details["follow_up"] = decision.FollowUp
+		if len(decision.Actions) == 0 && len(decision.MemoryUpdates) > 0 {
+			e.State.Memory.Apply(decision.MemoryUpdates, in.ID, in.UpdatedAt)
+			if err := e.Store.Append("memory_updated", in.ID, decision.MemoryUpdates); err != nil {
+				return err
+			}
+			details["memory_updates"] = len(decision.MemoryUpdates)
+		}
 	}
 	if err := e.emitLocked("assessment_finished", in.ID, summary, details); err != nil {
 		return err
@@ -644,6 +665,7 @@ func (e *Engine) cleanDecision(d protocol.Decision) protocol.Decision {
 	for i := range d.Evidence {
 		d.Evidence[i] = e.Redact(d.Evidence[i])
 	}
+	d.MemoryUpdates = e.cleanMemoryUpdates(d.MemoryUpdates)
 	d.Actions = append([]protocol.Action(nil), d.Actions...)
 	for i := range d.Actions {
 		a := &d.Actions[i]

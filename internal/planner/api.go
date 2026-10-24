@@ -226,7 +226,10 @@ func decisionSchema() map[string]any {
 	action := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "kind", "argv", "dir", "timeout_seconds", "reason", "mutates", "rollback", "verify"}, "properties": map[string]any{
 		"id": str, "kind": map[string]any{"type": "string", "enum": []string{"command"}}, "argv": strs, "dir": str, "timeout_seconds": map[string]any{"type": "integer"}, "reason": str, "mutates": map[string]any{"type": "boolean"}, "rollback": strs, "verify": strs,
 	}}
-	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"summary", "assessment", "evidence", "actions", "done", "follow_up"}, "properties": map[string]any{
-		"summary": str, "assessment": map[string]any{"type": "string", "enum": []string{"unknown", "not_affected", "exposed", "suspected_compromise", "confirmed_compromise", "remediated"}}, "evidence": strs, "actions": map[string]any{"type": "array", "items": action}, "done": map[string]any{"type": "boolean"}, "follow_up": str,
+	memoryUpdate := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "key", "text", "evidence", "tags", "ttl_hours"}, "properties": map[string]any{
+		"operation": map[string]any{"type": "string", "enum": []string{"upsert", "delete"}}, "key": str, "text": str, "evidence": strs, "tags": strs, "ttl_hours": map[string]any{"type": "integer"},
+	}}
+	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"summary", "assessment", "evidence", "actions", "done", "follow_up", "memory_updates"}, "properties": map[string]any{
+		"summary": str, "assessment": map[string]any{"type": "string", "enum": []string{"unknown", "not_affected", "exposed", "suspected_compromise", "confirmed_compromise", "remediated"}}, "evidence": strs, "actions": map[string]any{"type": "array", "items": action}, "done": map[string]any{"type": "boolean"}, "follow_up": str, "memory_updates": map[string]any{"type": "array", "items": memoryUpdate},
 	}}
 }

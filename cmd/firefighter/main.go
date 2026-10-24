@@ -20,6 +20,7 @@ import (
 	"github.com/jjcm/firefighter/internal/engine"
 	"github.com/jjcm/firefighter/internal/host"
 	"github.com/jjcm/firefighter/internal/intel"
+	"github.com/jjcm/firefighter/internal/memory"
 	"github.com/jjcm/firefighter/internal/planner"
 	"github.com/jjcm/firefighter/internal/report"
 	"github.com/jjcm/firefighter/internal/store"
@@ -73,7 +74,7 @@ func run(args []string) error {
 		fmt.Println("Created", *path)
 		return nil
 	}
-	if command != "run" && command != "once" && command != "doctor" && command != "status" {
+	if command != "run" && command != "once" && command != "doctor" && command != "status" && command != "memory" {
 		return fmt.Errorf("unknown command %q", command)
 	}
 	c, err := config.Load(*path)
@@ -85,6 +86,9 @@ func run(args []string) error {
 	}
 	if command == "status" {
 		return status(c)
+	}
+	if command == "memory" {
+		return showMemory(c)
 	}
 	if command == "doctor" {
 		return doctor(c)
@@ -258,9 +262,34 @@ func status(c config.Config) error {
 		sources[name] = map[string]interface{}{"last_success": s.LastSuccess, "last_error": s.LastError, "next_poll": s.NextPoll, "failures": s.Failures}
 	}
 	output := map[string]interface{}{"incidents": counts, "undelivered_reports": len(state.Outbox), "last_host_review": state.LastHostReview, "sources": sources}
+	state.Memory.Prune(time.Now().UTC())
+	mem := map[string]interface{}{"notes": len(state.Memory.Notes), "inventory_cached": state.Memory.Inventory != nil, "inventory_fresh": state.Memory.Inventory.Fresh(time.Now().UTC()), "inventory_ttl_seconds": int(memory.CacheTTL.Seconds())}
+	if state.Memory.Inventory != nil {
+		mem["inventory_collected_at"] = state.Memory.Inventory.Snapshot.CollectedAt
+		mem["inventory_invalidated_reason"] = state.Memory.Inventory.InvalidatedReason
+	}
+	output["memory"] = mem
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(output)
+}
+
+// Read the atomically replaced checkpoint without locking or altering daemon
+// state. This command does not load credentials or call the model.
+func showMemory(c config.Config) error {
+	f, err := os.Open(filepath.Join(c.StateDir, "state.json"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var state store.State
+	if err := json.NewDecoder(f).Decode(&state); err != nil {
+		return err
+	}
+	state.Memory.Prune(time.Now().UTC())
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(state.Memory)
 }
 func usage() {
 	fmt.Print(`firefighter — autonomous Linux incident response
@@ -269,7 +298,8 @@ Usage: firefighter <command> [--config /etc/firefighter/config.json] [--observe]
 
   init     Write a new default configuration; never overwrite an existing file
   doctor   Check local setup without making remote calls or changing the host
-  status   Read queue, source health, and undelivered report counts
+  status   Read queue, source health, memory, and undelivered report counts
+  memory   Show the cached inventory and unexpired host notes as JSON
   run      Continuously ingest, investigate, remediate, and report
   once     Poll once and process a bounded number of incidents
   version  Print build version

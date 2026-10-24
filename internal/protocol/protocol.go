@@ -27,13 +27,25 @@ type ActionResult struct {
 	Skipped    bool      `json:"skipped,omitempty"`
 }
 
+// MemoryUpdate records model recollections, never operator policy or executable
+// instructions. The harness assigns provenance, timestamps, and expiration.
+type MemoryUpdate struct {
+	Operation string   `json:"operation"`
+	Key       string   `json:"key"`
+	Text      string   `json:"text"`
+	Evidence  []string `json:"evidence"`
+	Tags      []string `json:"tags"`
+	TTLHours  int      `json:"ttl_hours"`
+}
+
 type Decision struct {
-	Summary    string   `json:"summary"`
-	Assessment string   `json:"assessment"`
-	Evidence   []string `json:"evidence"`
-	Actions    []Action `json:"actions"`
-	Done       bool     `json:"done"`
-	FollowUp   string   `json:"follow_up,omitempty"`
+	Summary       string         `json:"summary"`
+	Assessment    string         `json:"assessment"`
+	Evidence      []string       `json:"evidence"`
+	Actions       []Action       `json:"actions"`
+	Done          bool           `json:"done"`
+	FollowUp      string         `json:"follow_up,omitempty"`
+	MemoryUpdates []MemoryUpdate `json:"memory_updates,omitempty"`
 }
 
 type Turn struct {
@@ -48,6 +60,7 @@ type Request struct {
 	Host            interface{}         `json:"host"`
 	Intel           interface{}         `json:"intel"`
 	History         []Turn              `json:"history"`
+	Memory          interface{}         `json:"memory,omitempty"`
 	Instructions    string              `json:"instructions"`
 	RotationHooks   map[string][]string `json:"rotation_hooks,omitempty"`
 	RecoveryNotes   []string            `json:"recovery_notes,omitempty"`
