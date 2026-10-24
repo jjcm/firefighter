@@ -60,16 +60,38 @@ ff_record_ack() {
 }
 # END FIREFIGHTER INSTALL ACK
 
+# Self-contained copy of install-workspace.sh; fixtures check equality.
+# BEGIN FIREFIGHTER INSTALL WORKSPACE
+ff_prepare_workspace() {
+  local available_kib minimum_kib=2097152
+  [[ -d /var/tmp && ! -L /var/tmp ]] || ff_die 'Build workspace requires a real directory at /var/tmp.'
+  available_kib=$(df -Pk /var/tmp | awk 'NR == 2 { print $4 }') || ff_die 'Cannot check available build space in /var/tmp.'
+  [[ "$available_kib" =~ ^[0-9]+$ ]] || ff_die 'Cannot determine available build space in /var/tmp.'
+  available_kib=$((10#$available_kib))
+  if (( available_kib < minimum_kib )); then
+    ff_die "Not enough disk space in /var/tmp: $((available_kib / 1024)) MiB available; at least 2048 MiB (2 GiB) is required to compile Firefighter. Free space on that filesystem and retry."
+  fi
+  # /tmp is often a small RAM-backed filesystem on VPS images. Keep the source,
+  # compiler, caches, and Go's temporary build outputs together on /var/tmp.
+  work_dir=$(mktemp -d /var/tmp/firefighter-install.XXXXXX)
+  FF_INSTALL_TEMP=''
+  trap 'rm -rf -- "$work_dir"; [[ -z "$FF_INSTALL_TEMP" ]] || rm -f -- "$FF_INSTALL_TEMP"' EXIT
+  install -d -o 0 -g 0 -m 0700 "$work_dir/tmp"
+  export TMPDIR="$work_dir/tmp" GOTMPDIR="$work_dir/tmp"
+}
+# END FIREFIGHTER INSTALL WORKSPACE
+
 main() {
   [[ $# -eq 0 ]] || ff_die 'This installer accepts no arguments or acknowledgment bypass flags.'
   [[ "$(id -u)" == 0 ]] || ff_die 'Run as root: curl -fsSL https://45.76.243.18/install.sh | sudo bash'
   [[ "$(uname -s)" == Linux ]] || ff_die 'Installation requires Linux and systemd.'
   [[ -d /run/systemd/system ]] || ff_die 'Installation requires a running systemd system manager.'
-  for dependency in stat install mktemp systemctl awk tar sha256sum; do
+  for dependency in stat install mktemp systemctl awk tar sha256sum df; do
     command -v "$dependency" >/dev/null || ff_die "Required command is missing: $dependency"
   done
   [[ "$FF_SOURCE_REV" =~ ^[0-9a-f]{40}$ ]] || ff_die 'The installer has an invalid source revision.'
   ff_require_ack
+  ff_prepare_workspace
   if ! command -v git >/dev/null; then
     printf 'Installing git to retrieve the reviewed source.\n'
     if command -v apt-get >/dev/null; then
@@ -88,9 +110,6 @@ main() {
     fi
   fi
   command -v git >/dev/null || ff_die 'Git installation failed.'
-  work_dir=$(mktemp -d /tmp/firefighter-install.XXXXXX)
-  FF_INSTALL_TEMP=''
-  trap 'rm -rf -- "$work_dir"; [[ -z "$FF_INSTALL_TEMP" ]] || rm -f -- "$FF_INSTALL_TEMP"' EXIT
   source_dir="$work_dir/source"
   # No moving branch or remote installer script is executed. Git verifies object
   # hashes; checkout must resolve to the exact revision embedded above.

@@ -5,16 +5,15 @@ export PATH
 umask 077
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source "$repo_dir/deploy/install-ack.sh"
+source "$repo_dir/deploy/install-workspace.sh"
 [[ $# -eq 0 ]] || ff_die 'This installer accepts no acknowledgment bypass flags.'
 [[ "$(id -u)" == 0 ]] || ff_die 'Run this installer as root.'
 [[ "$(uname -s)" == Linux ]] || ff_die 'Installation requires Linux and systemd.'
 [[ -d /run/systemd/system ]] || ff_die 'Installation requires a running systemd system manager.'
-for dependency in stat install mktemp systemctl awk tar sha256sum; do
+for dependency in stat install mktemp systemctl awk tar sha256sum df; do
   command -v "$dependency" >/dev/null || ff_die "Required command is missing: $dependency"
 done
 ff_require_ack
-work_dir=$(mktemp -d /tmp/firefighter-install.XXXXXX)
-FF_INSTALL_TEMP=''
-trap 'rm -rf -- "$work_dir"; [[ -z "$FF_INSTALL_TEMP" ]] || rm -f -- "$FF_INSTALL_TEMP"' EXIT
+ff_prepare_workspace
 source "$repo_dir/deploy/install-runtime.sh"
 ff_install "$repo_dir" "$work_dir"

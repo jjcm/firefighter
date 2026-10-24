@@ -238,6 +238,15 @@ checksum-verified official host toolchain into its private temporary workspace.
 Architectures without an automatic toolchain download need a compatible Go
 compiler installed first. The Firefighter executables are compiled locally.
 
+The build workspace is a private directory under `/var/tmp`. Source, the optional
+Go toolchain, build caches, and compiler scratch files all stay there; both
+`TMPDIR` and `GOTMPDIR` point into the workspace. This avoids filling a small
+RAM-backed `/tmp`. After risk acknowledgment, the installer checks for at least
+2 GiB free on `/var/tmp` before downloads or provider setup. If that filesystem
+is too small, free space or give `/var/tmp` a larger disk-backed filesystem before
+retrying. Builds use one package worker to limit memory pressure. The temporary
+workspace is cleaned up on success or failure.
+
 The new configuration uses the central signed feed. Complete existing
 configuration and credentials are preserved byte-for-byte. After the source build
 and offline `doctor` validation pass, the installer enables the responder at boot,

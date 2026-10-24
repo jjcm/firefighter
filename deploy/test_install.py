@@ -40,12 +40,23 @@ def target(p):
  return p
 if name not in ('id','uname','stat'):
  with (root/'events').open('a') as f:f.write(json.dumps([name,*args])+'\n')
+ if name in ('git','go','curl','tar','mktemp'):
+  temporary=os.environ.get('TMPDIR','')
+  workspace=pathlib.Path(temporary).parent if temporary else None
+  mode=stat.S_IMODE(workspace.stat().st_mode) if workspace and workspace.exists() else None
+  with (root/'environment-events').open('a') as f:
+   f.write(json.dumps({'command':name,'args':args,'cwd':os.getcwd(),'workspace_mode':mode,'environment':{key:os.environ.get(key) for key in ('TMPDIR','GOTMPDIR','GOCACHE','GOPATH','GOMODCACHE')}})+'\n')
 if name=='id':print('0')
 elif name=='uname':print(os.environ.get('FF_FIXTURE_OS','Linux') if args==['-s'] else os.environ.get('FF_FIXTURE_ARCH','x86_64'))
 elif name=='stat':
  p=pathlib.Path(args[-1]);mode=stat.S_IMODE(p.stat().st_mode)
  uid=os.environ.get('FF_FIXTURE_DIRECTORY_UID' if p.is_dir() else 'FF_FIXTURE_MARKER_UID','0')
  print(uid+':'+format(mode,'o'))
+elif name=='df':
+ target(args[-1])
+ if os.environ.get('FF_FIXTURE_DF_FAILURE'):sys.exit(1)
+ print('Filesystem 1024-blocks Used Available Capacity Mounted on')
+ print('fixture 8388608 1048576 '+os.environ.get('FF_FIXTURE_FREE_KIB','7340032')+' 13% '+str(stage/'var/tmp'))
 elif name=='git':
  if 'init' in args:target(args[-1]).mkdir(parents=True)
  elif 'fetch' in args:
@@ -60,6 +71,11 @@ elif name=='go':
  elif args[0]=='build':
   for key in ('GOOS','GOARCH','GOROOT','GOFLAGS','GOEXPERIMENT'):assert key not in os.environ
   for key,value in [('GOENV','off'),('GOTOOLCHAIN','local'),('GOWORK','off'),('CGO_ENABLED','0')]:assert os.environ[key]==value
+  assert args[args.index('-p')+1]=='1', 'Compilation must limit parallel package builds'
+  for key in ('TMPDIR','GOTMPDIR','GOCACHE','GOPATH','GOMODCACHE'):
+   folder=target(os.environ[key]);assert folder.is_relative_to(stage/'var/tmp'), 'Compiler storage escaped disk workspace: '+key
+   folder.mkdir(parents=True,exist_ok=True)
+   (folder/'fixture-go-artifact').write_text('temporary compiler artifact')
   if os.environ.get('FF_FIXTURE_BUILD_FAILURE'):sys.exit(1)
   output=target(args[args.index('-o')+1]);output.write_text((root/'doctor-fixture').read_text());output.chmod(0o755)
  else:raise RuntimeError('Unexpected Go command')
@@ -128,7 +144,7 @@ class Fixture:
         self.stage = self.root/'stage'
         self.bin = self.root/'mock-bin'
         self.bin.mkdir()
-        for name in ('etc/systemd/system','run/systemd/system','var/lib','usr/local/bin','tmp'):
+        for name in ('etc/systemd/system','run/systemd/system','var/lib','var/tmp','usr/local/bin','tmp'):
             (self.stage/name).mkdir(parents=True)
         self.repo = self.root/'repo'
         shutil.copytree(REPO/'deploy',self.repo/'deploy',ignore=shutil.ignore_patterns('__pycache__'))
@@ -136,15 +152,15 @@ class Fixture:
         shutil.copyfile(REPO/'go.mod',self.repo/'go.mod')
         self.revision = re.search(r'^FF_SOURCE_REV=([0-9a-f]{40})$',(REPO/'deploy/bootstrap.sh').read_text(),re.M).group(1)
         dispatcher=self.bin/'mock';dispatcher.write_text(MOCK);dispatcher.chmod(0o755)
-        for command in ('id','uname','stat','git','go','curl','tar','sha256sum','mktemp','install','chmod','chown','mv','rm','systemctl'):
+        for command in ('id','uname','stat','df','git','go','curl','tar','sha256sum','mktemp','install','chmod','chown','mv','rm','systemctl'):
             (self.bin/command).symlink_to(dispatcher)
         (self.root/'doctor-fixture').write_text(DOCTOR)
         self.env=dict(os.environ,FF_FIXTURE_ROOT=str(self.root),FF_FIXTURE_REV=self.revision,FF_FIXTURE_EXPECTED_KEY=KEY,PATH=str(self.bin)+os.pathsep+os.environ['PATH'])
         # Production has no path override. Only copied test scripts are mapped.
-        for name in ('bootstrap.sh','install.sh','install-ack.sh','install-runtime.sh'):
+        for name in ('bootstrap.sh','install.sh','install-ack.sh','install-workspace.sh','install-runtime.sh'):
             p=self.repo/'deploy'/name
             text=p.read_text().replace('PATH=/usr/local/go/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','PATH='+str(self.bin)+':'+os.environ['PATH'])
-            for before,after in (('/etc/',str(self.stage/'etc')+'/'),('/run/systemd/system',str(self.stage/'run/systemd/system')),('/var/lib/',str(self.stage/'var/lib')+'/'),('/usr/local/bin',str(self.stage/'usr/local/bin')),('/tmp/firefighter-install.',str(self.stage/'tmp/firefighter-install.'))):
+            for before,after in (('/etc/',str(self.stage/'etc')+'/'),('/run/systemd/system',str(self.stage/'run/systemd/system')),('/var/lib/',str(self.stage/'var/lib')+'/'),('/usr/local/bin',str(self.stage/'usr/local/bin')),('/var/tmp',str(self.stage/'var/tmp'))):
                 text=text.replace(before,after)
             p.write_text(text)
         with tarfile.open(self.root/'go.tar.gz','w:gz') as archive:
@@ -168,6 +184,8 @@ class Fixture:
         return text,env
     def events(self):
         p=self.root/'events';return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+    def environment_events(self):
+        p=self.root/'environment-events';return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
     def run(self,kind='bootstrap',answer=None,provider='',model='',key=KEY,script=None,terminal=False):
         file=self.repo/'deploy'/('bootstrap.sh' if kind=='bootstrap' else 'install.sh')
         code=script if script is not None else file.read_text()
@@ -220,11 +238,98 @@ class InstallTests(unittest.TestCase):
     def assert_not_started(self):
         self.assertFalse(any(e[0]=='systemctl' for e in self.f.events()))
         self.assertFalse((self.f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
+    def assert_workspace_isolated(self,f,kind,downloaded):
+        workspaces=[Path(e[-1]) for e in f.events() if e[:2]==['mktemp','-d']]
+        self.assertEqual(len(workspaces),1)
+        self.assertEqual(workspaces[0].parent,f.stage/'var/tmp')
+        self.assertTrue(workspaces[0].name.startswith('firefighter-install.'))
+        contexts=[e for e in f.environment_events() if e['command'] in ('git','go','curl','tar')]
+        self.assertTrue(contexts)
+        for event in contexts:
+            env=event['environment'];temporary=Path(env['TMPDIR']);workspace=temporary.parent
+            self.assertEqual(workspace.parent,f.stage/'var/tmp',event)
+            self.assertTrue(workspace.name.startswith('firefighter-install.'),event)
+            self.assertEqual(env['GOTMPDIR'],str(temporary),event)
+            self.assertEqual(event['workspace_mode'],0o700,event)
+            if event['command']=='git' and 'init' in event['args']:
+                self.assertEqual(Path(event['args'][-1]),workspace/'source',event)
+            if event['command']=='curl':
+                self.assertTrue(Path(event['args'][event['args'].index('--output')+1]).is_relative_to(workspace),event)
+            if event['command']=='tar':
+                self.assertTrue(Path(event['args'][event['args'].index('-xzf')+1]).is_relative_to(workspace),event)
+                self.assertEqual(Path(event['args'][event['args'].index('-C')+1]),workspace,event)
+            if event['command']=='go' and event['args'][0]=='build':
+                for key in ('GOCACHE','GOPATH','GOMODCACHE'):
+                    self.assertTrue(Path(env[key]).is_relative_to(workspace),event)
+                self.assertEqual(event['args'][event['args'].index('-p')+1],'1',event)
+                self.assertTrue(Path(event['args'][event['args'].index('-o')+1]).is_relative_to(workspace),event)
+                expected_source=workspace/'source' if kind=='bootstrap' else f.repo
+                self.assertEqual(Path(event['cwd']).resolve(),expected_source.resolve(),event)
+        self.assertEqual(len([e for e in contexts if e['command']=='curl']),2 if downloaded else 0)
+        self.assertEqual(list((f.stage/'var/tmp').iterdir()),[],'private compilation workspace was not removed')
+        self.assertEqual(list((f.stage/'tmp').iterdir()),[],'inherited temporary directory was used')
     def test_acknowledgment_blocks_are_identical(self):
         def block(p):
             t=p.read_text();a=t.index('# BEGIN FIREFIGHTER INSTALL ACK');b=t.index('# END FIREFIGHTER INSTALL ACK')
             return t[a:b]
         self.assertEqual(block(REPO/'deploy/install-ack.sh'),block(REPO/'deploy/bootstrap.sh'))
+    def test_workspace_preflight_blocks_are_identical(self):
+        def block(p):
+            text=p.read_text();a=text.index('# BEGIN FIREFIGHTER INSTALL WORKSPACE');b=text.index('# END FIREFIGHTER INSTALL WORKSPACE')
+            return text[a:b]
+        self.assertEqual(block(REPO/'deploy/install-workspace.sh'),block(REPO/'deploy/bootstrap.sh'))
+    def test_both_installers_keep_all_compiler_storage_off_inherited_tmp(self):
+        for kind in ('bootstrap','repo'):
+            for downloaded in (False,True):
+                with self.subTest(kind=kind,downloaded=downloaded):
+                    f=Fixture()
+                    try:
+                        for key in ('TMPDIR','GOTMPDIR','GOCACHE','GOPATH','GOMODCACHE'):
+                            f.env[key]=str(f.stage/'tmp'/key.lower())
+                        if downloaded:f.env['FF_FIXTURE_GO_VERSION']='go1.18.1'
+                        else:f.env['FF_FIXTURE_FREE_KIB']='2097152' # Exactly the minimum is sufficient.
+                        code,out=f.run(kind,answer=PHRASE)
+                        self.assertEqual(code,0,out)
+                        self.assert_workspace_isolated(f,kind,downloaded)
+                    finally:f.close()
+    def test_low_or_unreadable_space_stops_before_provider_fetch_build_and_service(self):
+        for kind in ('bootstrap','repo'):
+            for mode in ('low','malformed','unavailable'):
+                with self.subTest(kind=kind,mode=mode):
+                    f=Fixture()
+                    try:
+                        if mode=='unavailable':f.env['FF_FIXTURE_DF_FAILURE']='1'
+                        else:f.env['FF_FIXTURE_FREE_KIB']='2097151' if mode=='low' else 'unknown'
+                        code,out=f.run(kind,answer=PHRASE)
+                        self.assertNotEqual(code,0,out)
+                        self.assertIn(PHRASE,out)
+                        self.assertIn('space',out.lower())
+                        self.assertNotIn('Provider [',out)
+                        self.assertNotIn('API key (hidden)',out)
+                        self.assertTrue(f.events())
+                        self.assertTrue(all(e[0]=='df' for e in f.events()),f.events())
+                        self.assertFalse((f.stage/'etc/firefighter').exists())
+                        self.assertEqual(list((f.stage/'var/tmp').iterdir()),[])
+                    finally:f.close()
+    def test_failed_fetch_build_or_service_cleans_private_workspace(self):
+        for kind in ('bootstrap','repo'):
+            modes=('fetch','build','checksum','service') if kind=='bootstrap' else ('build','checksum','service')
+            for mode in modes:
+                with self.subTest(kind=kind,mode=mode):
+                    f=Fixture()
+                    try:
+                        if mode=='checksum':
+                            f.env['FF_FIXTURE_GO_VERSION']='go1.18.1'
+                            (f.root/'go.tar.gz').write_text('corrupt toolchain archive')
+                        else:
+                            variable,value={'fetch':('FF_FIXTURE_FETCH_FAILURE','1'),'build':('FF_FIXTURE_BUILD_FAILURE','1'),'service':('FF_FIXTURE_SYSTEMCTL_FAILURE','restart')}[mode]
+                            f.env[variable]=value
+                        code,out=f.run(kind,answer=PHRASE)
+                        self.assertNotEqual(code,0,out)
+                        self.assertEqual(list((f.stage/'var/tmp').iterdir()),[],'failure left build artifacts or staged credentials behind')
+                        self.assertTrue(any(e[:2]==['rm','-rf'] for e in f.events()),f.events())
+                        self.assertFalse((f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
+                    finally:f.close()
     def test_no_terminal_fails_before_mutation_for_both_installers(self):
         for kind in ('bootstrap','repo'):
             with self.subTest(kind=kind):

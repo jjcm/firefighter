@@ -28,6 +28,8 @@ The landing page gives the experimental-use warning and a link to the FAQ. The e
 
 The installer fetches an exact reviewed commit from the [public GitHub repository](https://github.com/jjcm/firefighter), verifies the checked-out revision, and builds the responder and optional Grok Bot bridge locally. It does not download prebuilt Firefighter executables. It uses an existing compatible Go compiler or a checksum-verified official Go archive in a private temporary directory. The installation target is Linux with a running systemd manager and a Go-supported host architecture.
 
+Compilation uses a private `/var/tmp` workspace with Go's scratch directories and caches redirected there, rather than filling a small RAM-backed `/tmp`. The installer requires 2 GiB free on that filesystem and checks this before downloads or provider setup. It compiles packages one at a time and removes the workspace when finished.
+
 Interactive setup offers OpenRouter by default, OpenAI, and Anthropic, allows a model override, and reads the API key without echoing it. A successful build and local configuration check enables and starts the root responder. Existing complete configuration and credentials are preserved; successful upgrades restart the responder. Grok Bot reporting remains optional and needs a separately configured destination. The page therefore has no separate Configure or Run tabs.
 
 The same-origin distribution routes are limited to:

@@ -107,9 +107,11 @@ ff_install() {
     # Compile for the local machine, independent of inherited cross-build flags.
     unset GOOS GOARCH GOARM GOAMD64 GOROOT GOFLAGS GOEXPERIMENT
     export GOENV=off GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0
+    export TMPDIR="$work_dir/tmp" GOTMPDIR="$work_dir/tmp"
     export GOCACHE="$work_dir/go-cache" GOPATH="$work_dir/go-path" GOMODCACHE="$work_dir/go-modules"
-    "$FF_GO" build -trimpath -ldflags "-s -w -X main.version=$revision" -o "$work_dir/firefighter" ./cmd/firefighter
-    "$FF_GO" build -trimpath -ldflags '-s -w' -o "$work_dir/firefighter-grokbot" ./plugins/grokbot/cmd
+    # Compile one package at a time to keep memory use manageable on small VPSs.
+    "$FF_GO" build -p 1 -trimpath -ldflags "-s -w -X main.version=$revision" -o "$work_dir/firefighter" ./cmd/firefighter
+    "$FF_GO" build -p 1 -trimpath -ldflags '-s -w' -o "$work_dir/firefighter-grokbot" ./plugins/grokbot/cmd
   )
   # Validate with credentials in a child environment, never shell-source secrets.
   python3 "$source_dir/deploy/install-config.py" doctor "$work_dir/firefighter" "$work_dir/config.json" "$work_dir/firefighter.env"
