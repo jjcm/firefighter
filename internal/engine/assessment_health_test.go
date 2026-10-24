@@ -62,6 +62,32 @@ func reopenHealth(t *testing.T, e *Engine, in *store.Incident, dir string) *stor
 	return state.Incidents[in.ID]
 }
 
+func removeLegacyAuditCheckpoint(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, "state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	delete(state, "audit_checkpoint")
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A coarse, backdated filesystem timestamp must have no effect on replay.
+	old := time.Unix(1, 0)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAssessmentHealthAggregatesAndBoundsRepeatedFailures(t *testing.T) {
 	e, in, dir := healthFixture(t)
 	cause := errors.New("private-provider-error-and-advisory-content")
@@ -438,11 +464,12 @@ func TestAssessmentHealthMigratesLegacyStateConservatively(t *testing.T) {
 	if err := e.Store.Save(e.State); err != nil {
 		t.Fatal(err)
 	}
+	removeLegacyAuditCheckpoint(t, dir)
 	in = reopenHealth(t, e, in, dir)
 	if e.State.AssessmentHealth.ConsecutiveFailures != 8 {
 		t.Fatal("historical report replay overwrote the legacy checkpoint")
 	}
-	in.UpdatedAt = in.UpdatedAt.Add(time.Hour)
+	in.UpdatedAt = e.State.AssessmentHealth.LastFailureAt
 	in.ApplicabilityStatus = "not_affected"
 	for i := 0; i < 3; i++ {
 		observeHealth(t, e, in, "completed", nil)
@@ -454,6 +481,48 @@ func TestAssessmentHealthMigratesLegacyStateConservatively(t *testing.T) {
 	observeHealth(t, e, in, "completed", nil)
 	if len(e.State.Outbox) != 2 || e.State.Outbox[1].Event.Details["failure_count"] != 8 {
 		t.Fatal("legacy episode did not recover after stable evidence")
+	}
+}
+
+func TestAssessmentHealthLegacyRecoveryProgressCannotCrossUncheckpointedFailure(t *testing.T) {
+	e, in, dir := healthFixture(t)
+	for i := 0; i < 3; i++ {
+		observeHealth(t, e, in, "deferred", errors.New("unresolved"))
+	}
+	// A reminder is one failure away, while the legacy checkpoint records two
+	// successful assessments. The next unresolved assessment must break both
+	// recovery requirements, even when its state update is lost in a crash.
+	health := &e.State.AssessmentHealth
+	health.EpisodeFailures = 12
+	health.ConsecutiveFailures = 0
+	health.ConsecutiveSuccesses = 2
+	health.LastReportedAt = in.UpdatedAt.Add(-time.Hour)
+	health.LastFailureAt = in.UpdatedAt.Add(-10 * time.Minute)
+	if err := e.Store.Save(e.State); err != nil {
+		t.Fatal(err)
+	}
+	removeLegacyAuditCheckpoint(t, dir)
+	e.mu.Lock()
+	err := e.observeAssessmentHealthLocked(in, "deferred", errors.New("intervening unresolved assessment"))
+	e.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in = reopenHealth(t, e, in, dir)
+	health = &e.State.AssessmentHealth
+	if health.EpisodeFailures != 13 || health.ConsecutiveSuccesses != 0 || !health.LastFailureAt.After(in.UpdatedAt) {
+		t.Fatal("legacy migration preserved success streak/quiet time across an uncheckpointed failure")
+	}
+	in.ApplicabilityStatus = "not_affected"
+	in.UpdatedAt = health.LastFailureAt.Add(assessmentHealthRecoveryInterval)
+	observeHealth(t, e, in, "completed", nil)
+	if len(e.State.Outbox) != 2 || e.State.AssessmentHealth.ConsecutiveSuccesses != 1 {
+		t.Fatal("one post-upgrade success falsely completed the old recovery streak")
+	}
+	observeHealth(t, e, in, "completed", nil)
+	observeHealth(t, e, in, "completed", nil)
+	if len(e.State.Outbox) != 3 || e.State.Outbox[2].Event.Type != "assessment_health_recovered" {
+		t.Fatal("conservative legacy migration never recovered after fresh stable evidence")
 	}
 }
 
@@ -563,6 +632,7 @@ func TestAssessmentHealthLegacyReportObligationMatchesActiveEpisode(t *testing.T
 			if err := e.Store.Save(e.State); err != nil {
 				t.Fatal(err)
 			}
+			removeLegacyAuditCheckpoint(t, dir)
 			in = reopenHealth(t, e, in, dir)
 			if !e.State.AssessmentHealth.ReportQueued {
 				t.Fatal("legacy migration lost earlier queued alert in the active episode")
