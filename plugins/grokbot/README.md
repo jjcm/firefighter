@@ -2,6 +2,8 @@
 
 This plugin forwards Firefighter reports to a configurable **Grok Bot routine webhook**. It is a small standalone Go bridge, with no external dependencies, and runs separately from the root responder.
 
+For a new installation, choose **Grok Bot** in the installer's final messaging step. It asks for the routine URL and key, tests delivery, and sends directly to the routine without this bridge. See [interactive setup](../../README.md#connect-grok-bot). The bridge below remains useful for existing signed-webhook integrations and a receiver hosted separately from the protected server.
+
 The integration uses the official [Grok Bot routine webhook contract](https://cursor.com/help/grok-bot/routines#where-do-the-webhook-url-and-key-live-and-what-does-a-200-mean): JSON POST to the URL shown in the routine, authenticated with its bearer key. HTTP 200 means the routine accepted the event and started, not that it finished. The [Grok Bot documentation](https://docs.x.ai/grok-bot/skills-routines-and-automations) links to that contract. No public native runtime plugin SDK was established from these official docs, so this package does not claim to be an installable Connect apps catalog entry or invent a native manifest. The separately named open-source `GrokBot` projects are not used.
 
 ## Install and configure

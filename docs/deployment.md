@@ -247,14 +247,23 @@ is too small, free space or give `/var/tmp` a larger disk-backed filesystem befo
 retrying. Builds use one package worker to limit memory pressure. The temporary
 workspace is cleaned up on success or failure.
 
-The new configuration uses the central signed feed. Complete existing
-configuration and credentials are preserved byte-for-byte. After the source build
-and offline `doctor` validation pass, the installer enables the responder at boot,
-starts or restarts it, and checks that the service is active. The installer does
-not make model API calls; account access, model availability, and balance are
-checked when the running service makes its first request. Watch the journal for
-errors. The optional Grok Bot bridge is built and installed but requires a reporting
-destination before it is enabled; see [reporting setup](../README.md#connect-grok-bot).
+The new configuration uses the central signed feed. Existing model settings and
+credentials are preserved. After compilation, the final interactive step offers
+Discord, Telegram, Slack, Grok Bot, or an explicit local-only choice. Destination
+URLs and tokens are read with echo disabled and stored in the private environment
+file. Telegram can pair a private chat using a one-time code. The compiled client
+sends a test directly to the chosen provider before installation starts the service.
+Failed delivery offers retry or another choice. Configured destinations and explicit
+local-only selections are preserved on upgrades; an unattended upgrade does not
+invent a destination.
+
+After messaging setup and offline `doctor` validation pass, the installer enables
+the responder at boot, starts or restarts it, and checks that it is active. There
+are no model API calls during setup; model access and balance are checked by the
+running service. Messaging tests do make provider requests. Grok Bot acceptance
+starts a reporting routine, whose completion must be checked in the Bot chat.
+Clients deliver messages directly over HTTPS without using the notice hub. The
+optional older Grok Bot bridge remains available; see [notification setup](../README.md#choose-notifications).
 
 For an existing configuration that polls upstream sources directly, replace the complete `sources`
 array and configure the model API as needed. This fragment follows the public

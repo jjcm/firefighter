@@ -51,6 +51,7 @@ type State struct {
 	Incidents      map[string]*Incident   `json:"incidents"`
 	Outbox         []Delivery             `json:"outbox"`
 	LastHostReview time.Time              `json:"last_host_review"`
+	ReportRetryAt  time.Time              `json:"report_retry_at,omitempty"`
 	Memory         memory.State           `json:"memory"`
 }
 type Record struct {

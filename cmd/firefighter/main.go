@@ -22,7 +22,6 @@ import (
 	"github.com/jjcm/firefighter/internal/intel"
 	"github.com/jjcm/firefighter/internal/memory"
 	"github.com/jjcm/firefighter/internal/planner"
-	"github.com/jjcm/firefighter/internal/report"
 	"github.com/jjcm/firefighter/internal/store"
 )
 
@@ -48,6 +47,9 @@ func run(args []string) error {
 		return nil
 	}
 	command := args[0]
+	if command == "telegram-pair" {
+		return telegramPair(args[1:])
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	path := flags.String("config", "/etc/firefighter/config.json", "configuration file")
 	observe := flags.Bool("observe", false, "collect inventory and plans, execute no model-generated command")
@@ -74,7 +76,7 @@ func run(args []string) error {
 		fmt.Println("Created", *path)
 		return nil
 	}
-	if command != "run" && command != "once" && command != "doctor" && command != "status" && command != "memory" {
+	if command != "run" && command != "once" && command != "doctor" && command != "status" && command != "memory" && command != "notify-test" {
 		return fmt.Errorf("unknown command %q", command)
 	}
 	c, err := config.Load(*path)
@@ -93,6 +95,9 @@ func run(args []string) error {
 	if command == "doctor" {
 		return doctor(c)
 	}
+	if command == "notify-test" {
+		return notifyTest(c)
+	}
 	if !c.Observe && runtime.GOOS != "linux" {
 		return errors.New("autonomous execution requires Linux; use --observe for development")
 	}
@@ -107,18 +112,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	var sender report.Sender
-	if c.Report.URL != "" {
-		sender, err = report.New(c.Report.URL, os.Getenv(c.Report.SecretEnv), os.Getenv(c.Report.BearerTokenEnv))
-		if err != nil {
-			return err
-		}
+	sender, err := buildReporter(c)
+	if err != nil {
+		return err
 	}
-	secrets := []string{os.Getenv(c.LLM.APIKeyEnv), os.Getenv(c.Report.SecretEnv), os.Getenv(c.Report.BearerTokenEnv)}
-	for _, s := range c.Sources {
-		secrets = append(secrets, os.Getenv(s.TokenEnv))
-	}
-	redact := report.Redactor(secrets...)
+	redact := buildRedactor(c)
 	disk, state, err := store.Open(c.StateDir)
 	if err != nil {
 		return err
@@ -226,9 +224,9 @@ func doctor(c config.Config) error {
 		}
 	}
 	check(x || broadcast, "X/Twitter source or signed central broadcast configured")
-	if c.Report.URL != "" {
-		_, err := report.New(c.Report.URL, os.Getenv(c.Report.SecretEnv), os.Getenv(c.Report.BearerTokenEnv))
-		check(err == nil, "signed reporting destination")
+	if c.Report.Enabled() {
+		_, err := buildReporter(c)
+		check(err == nil, "reporting destination: "+reportProvider(c.Report))
 	} else {
 		fmt.Println("INFO external reporting is not configured; local audit and journal only")
 	}
@@ -261,7 +259,7 @@ func status(c config.Config) error {
 	for name, s := range state.Sources {
 		sources[name] = map[string]interface{}{"last_success": s.LastSuccess, "last_error": s.LastError, "next_poll": s.NextPoll, "failures": s.Failures}
 	}
-	output := map[string]interface{}{"incidents": counts, "undelivered_reports": len(state.Outbox), "last_host_review": state.LastHostReview, "sources": sources}
+	output := map[string]interface{}{"incidents": counts, "undelivered_reports": len(state.Outbox), "report_retry_at": state.ReportRetryAt, "last_host_review": state.LastHostReview, "sources": sources}
 	state.Memory.Prune(time.Now().UTC())
 	mem := map[string]interface{}{"notes": len(state.Memory.Notes), "inventory_cached": state.Memory.Inventory != nil, "inventory_fresh": state.Memory.Inventory.Fresh(time.Now().UTC()), "inventory_ttl_seconds": int(memory.CacheTTL.Seconds())}
 	if state.Memory.Inventory != nil {
@@ -300,6 +298,9 @@ Usage: firefighter <command> [--config /etc/firefighter/config.json] [--observe]
   doctor   Check local setup without making remote calls or changing the host
   status   Read queue, source health, memory, and undelivered report counts
   memory   Show the cached inventory and unexpired host notes as JSON
+  notify-test  Send one test notification; does not run the agent
+  telegram-pair --token-env NAME --code FF-<24 lowercase hex characters>
+           Find a matching private Telegram message without changing local state
   run      Continuously ingest, investigate, remediate, and report
   once     Poll once and process a bounded number of incidents
   version  Print build version

@@ -67,7 +67,10 @@ func (w *Webhook) Send(ctx context.Context, event protocol.Event) error {
 		return errors.New("report delivery failed (network or timeout)")
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return retryError(resp.Header, data, time.Now())
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("report delivery returned HTTP %d", resp.StatusCode)
 	}

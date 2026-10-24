@@ -34,22 +34,23 @@ type ScheduledSource struct {
 	Source intel.Source
 }
 type Engine struct {
-	Config    config.Config
-	Store     *store.Store
-	State     *store.State
-	Planner   Planner
-	Runner    Runner
-	Sources   []ScheduledSource
-	Reporter  report.Sender
-	Collect   func(context.Context) (host.Snapshot, error)
-	Redact    func(string) string
-	Log       *slog.Logger
-	Hostname  string
-	mu        sync.Mutex
-	workMu    sync.Mutex
-	reportMu  sync.Mutex
-	wake      chan struct{}
-	processed uint64
+	Config     config.Config
+	Store      *store.Store
+	State      *store.State
+	Planner    Planner
+	Runner     Runner
+	Sources    []ScheduledSource
+	Reporter   report.Sender
+	Collect    func(context.Context) (host.Snapshot, error)
+	Redact     func(string) string
+	Log        *slog.Logger
+	Hostname   string
+	mu         sync.Mutex
+	workMu     sync.Mutex
+	reportMu   sync.Mutex
+	wake       chan struct{}
+	reportWake chan struct{}
+	processed  uint64
 }
 
 func (e *Engine) defaults() {
@@ -64,6 +65,9 @@ func (e *Engine) defaults() {
 	}
 	if e.wake == nil {
 		e.wake = make(chan struct{}, 1)
+	}
+	if e.reportWake == nil {
+		e.reportWake = make(chan struct{}, 1)
 	}
 }
 func (e *Engine) signal() {
@@ -121,6 +125,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+			case <-e.reportWake:
 			}
 		}
 	}()
@@ -369,7 +374,7 @@ func urgentDeferred(in *store.Incident) bool {
 func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 	ctx, cancel := context.WithTimeout(parent, config.Seconds(e.Config.IncidentTimeoutSeconds))
 	defer cancel()
-	if err := e.emit("assessment_started", in.ID, in.Item.Title, nil); err != nil {
+	if err := e.emit("assessment_started", in.ID, in.Item.Title, map[string]interface{}{"source": in.Item.Source}); err != nil {
 		return err
 	}
 	notes := append([]string(nil), in.RecoveryNotes...)
@@ -455,21 +460,21 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 			if err != nil {
 				return err
 			}
-			failed := result.ExitCode != 0 || result.Error != "" || result.TimedOut
+			failed := result.ExitCode != 0 || result.Error != "" || result.TimedOut || result.Skipped
 			if !failed && len(action.Verify) > 0 {
 				check := protocol.Action{ID: action.ID + "-verify", Kind: "command", Argv: action.Verify, Dir: action.Dir, TimeoutSeconds: action.TimeoutSeconds, Reason: "Verify: " + action.Reason}
-				vr, xerr := e.execute(ctx, in, turn, check)
+				vr, xerr := e.executePhase(ctx, in, turn, check, "verification")
 				if xerr != nil {
 					return xerr
 				}
-				failed = vr.ExitCode != 0 || vr.Error != "" || vr.TimedOut
+				failed = vr.ExitCode != 0 || vr.Error != "" || vr.TimedOut || vr.Skipped
 				if !failed {
 					verified = true
 				}
 			}
 			if failed && len(action.Rollback) > 0 && ctx.Err() == nil {
 				rollback := protocol.Action{ID: action.ID + "-rollback", Kind: "command", Argv: action.Rollback, Dir: action.Dir, TimeoutSeconds: action.TimeoutSeconds, Reason: "Recover after failed action or verification: " + action.Reason, Mutates: true}
-				if _, err = e.execute(ctx, in, turn, rollback); err != nil {
+				if _, err = e.executePhase(ctx, in, turn, rollback, "rollback"); err != nil {
 					return err
 				}
 				verified = false
@@ -484,11 +489,18 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 	return e.finish(in, "deferred", "Assessment round budget reached; further work scheduled", errors.New("round budget exhausted"), nil)
 }
 func (e *Engine) execute(ctx context.Context, in *store.Incident, turn int, action protocol.Action) (protocol.ActionResult, error) {
+	return e.executePhase(ctx, in, turn, action, "action")
+}
+
+func (e *Engine) executePhase(ctx context.Context, in *store.Incident, turn int, action protocol.Action, phase string) (protocol.ActionResult, error) {
 	if err := e.Runner.Validate(action); err != nil {
 		return protocol.ActionResult{}, err
 	}
 	e.mu.Lock()
 	err := e.Store.Append("action_intent", in.ID, e.cleanDecision(protocol.Decision{Actions: []protocol.Action{action}}).Actions[0])
+	if err == nil {
+		err = e.emitLocked("action_started", in.ID, action.Reason, map[string]interface{}{"action_id": action.ID, "mutates": action.Mutates, "phase": phase})
+	}
 	if err == nil {
 		// Even a command labeled read-only may change state. Invalidate before
 		// execution so crashes, failed commands, and rollbacks cannot leave a
@@ -501,6 +513,7 @@ func (e *Engine) execute(ctx context.Context, in *store.Incident, turn int, acti
 		return protocol.ActionResult{}, err
 	}
 	result := e.Runner.Run(ctx, action)
+	result.ActionID = e.Redact(result.ActionID)
 	result.Output = e.Redact(result.Output)
 	result.Error = e.Redact(result.Error)
 	e.mu.Lock()
@@ -509,7 +522,8 @@ func (e *Engine) execute(ctx context.Context, in *store.Incident, turn int, acti
 		return result, err
 	}
 	in.History[turn].Results = append(in.History[turn].Results, result)
-	if err = e.emitLocked("action_finished", in.ID, action.Reason, map[string]interface{}{"action_id": action.ID, "exit_code": result.ExitCode, "timed_out": result.TimedOut, "error": result.Error}); err != nil {
+	verified := phase == "verification" && result.ExitCode == 0 && result.Error == "" && !result.TimedOut && !result.Skipped
+	if err = e.emitLocked("action_finished", in.ID, action.Reason, map[string]interface{}{"action_id": action.ID, "exit_code": result.ExitCode, "timed_out": result.TimedOut, "error": result.Error, "skipped": result.Skipped, "mutates": action.Mutates, "phase": phase, "verified": verified}); err != nil {
 		return result, err
 	}
 	return result, e.Store.Save(e.State)
@@ -521,6 +535,20 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 	in.UpdatedAt = time.Now().UTC()
 	in.NextAttempt = in.UpdatedAt.Add(config.Seconds(e.Config.RecheckSeconds))
 	in.LastError = ""
+	changed := false
+	for _, turn := range in.History {
+		for _, action := range turn.Decision.Actions {
+			if !action.Mutates {
+				continue
+			}
+			// Planned but unexecuted changes (including observe mode) are not changes.
+			for _, result := range turn.Results {
+				if result.ActionID == action.ID && !result.Skipped {
+					changed = true
+				}
+			}
+		}
+	}
 	terminal := status == "completed" && decision != nil && (decision.Assessment == "not_affected" || decision.Assessment == "remediated")
 	if terminal {
 		in.NextAttempt = time.Time{}
@@ -531,7 +559,7 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 		in.LastError = e.Redact(cause.Error())
 		in.NextAttempt = in.UpdatedAt.Add(backoff(in.Attempts, 30*time.Second, 15*time.Minute))
 	}
-	details := map[string]interface{}{"status": status, "error": in.LastError}
+	details := map[string]interface{}{"status": status, "error": in.LastError, "source": in.Item.Source, "changed": changed, "verified": status == "completed" && decision != nil && decision.Assessment == "remediated"}
 	if !in.NextAttempt.IsZero() {
 		details["next_assessment"] = in.NextAttempt
 	}
@@ -565,19 +593,58 @@ func (e *Engine) emitLocked(typ, id, summary string, details map[string]interfac
 	if _, err := rand.Read(b[:]); err != nil {
 		return err
 	}
-	event := protocol.Event{ID: hex.EncodeToString(b[:]), Time: time.Now().UTC(), Host: e.Hostname, Type: typ, IncidentID: id, Summary: e.Redact(summary), Details: details}
+	event := protocol.Event{ID: hex.EncodeToString(b[:]), Time: time.Now().UTC(), Host: e.Redact(e.Hostname), Type: typ, IncidentID: e.Redact(id), Summary: e.Redact(summary)}
+	if details != nil {
+		event.Details = cleanReportValue(details, e.Redact).(map[string]interface{})
+	}
 	auditType := "event"
-	if e.Reporter != nil {
+	shouldSend := e.Reporter != nil
+	if filter, ok := e.Reporter.(interface{ ShouldSend(protocol.Event) bool }); ok {
+		shouldSend = filter.ShouldSend(event)
+	}
+	if shouldSend {
 		auditType = "report_queued"
 	}
-	if err := e.Store.Append(auditType, id, event); err != nil {
+	if err := e.Store.Append(auditType, event.IncidentID, event); err != nil {
 		return err
 	}
-	if e.Reporter != nil {
+	if shouldSend {
 		e.State.Outbox = append(e.State.Outbox, store.Delivery{Event: event})
+		select {
+		case e.reportWake <- struct{}{}:
+		default:
+		}
 	}
-	e.Log.Info(event.Summary, "event", typ, "incident", id)
+	e.Log.Info(event.Summary, "event", typ, "incident", event.IncidentID)
 	return nil
+}
+
+// Scrub all report fields before the durable outbox, including model-controlled
+// action IDs and nested evidence. Keep supported JSON values and timestamps;
+// unknown rich types must be explicitly converted by the event's producer.
+func cleanReportValue(value interface{}, redact func(string) string) interface{} {
+	switch v := value.(type) {
+	case string:
+		return redact(v)
+	case []string:
+		return cleanStrings(v, redact)
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = cleanReportValue(item, redact)
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			out[redact(key)] = cleanReportValue(item, redact)
+		}
+		return out
+	case nil, bool, int, int32, int64, uint, uint32, uint64, float32, float64, time.Time:
+		return v
+	default:
+		return nil
+	}
 }
 func (e *Engine) FlushReports(ctx context.Context) error {
 	e.reportMu.Lock()
@@ -588,6 +655,10 @@ func (e *Engine) FlushReports(ctx context.Context) error {
 	e.mu.Lock()
 	var due []store.Delivery
 	now := time.Now()
+	if now.Before(e.State.ReportRetryAt) {
+		e.mu.Unlock()
+		return nil
+	}
 	for _, d := range e.State.Outbox {
 		if !now.Before(d.NextAttempt) {
 			due = append(due, d)
@@ -613,9 +684,16 @@ func (e *Engine) FlushReports(ctx context.Context) error {
 					return ackErr
 				}
 				e.State.Outbox = append(e.State.Outbox[:i], e.State.Outbox[i+1:]...)
+				e.State.ReportRetryAt = time.Time{}
 			} else {
 				e.State.Outbox[i].Attempts++
-				e.State.Outbox[i].NextAttempt = time.Now().Add(backoff(e.State.Outbox[i].Attempts, 10*time.Second, 30*time.Minute))
+				delay := backoff(e.State.Outbox[i].Attempts, 10*time.Second, 30*time.Minute)
+				var retry interface{ RetryAfter() time.Duration }
+				if errors.As(err, &retry) {
+					delay = max(delay, min(retry.RetryAfter(), 24*time.Hour))
+				}
+				e.State.ReportRetryAt = time.Now().UTC().Add(delay)
+				e.State.Outbox[i].NextAttempt = e.State.ReportRetryAt
 				e.Log.Warn("report delivery delayed", "error", e.Redact(err.Error()))
 			}
 			break
@@ -624,6 +702,11 @@ func (e *Engine) FlushReports(ctx context.Context) error {
 		e.mu.Unlock()
 		if saveErr != nil {
 			return saveErr
+		}
+		if err != nil {
+			// A destination outage or rate limit applies to this whole channel;
+			// do not hammer it with the rest of the queued messages.
+			return nil
 		}
 	}
 	return nil
@@ -669,6 +752,7 @@ func (e *Engine) cleanDecision(d protocol.Decision) protocol.Decision {
 	d.Actions = append([]protocol.Action(nil), d.Actions...)
 	for i := range d.Actions {
 		a := &d.Actions[i]
+		a.ID = e.Redact(a.ID)
 		a.Reason = e.Redact(a.Reason)
 		a.Argv = cleanStrings(a.Argv, e.Redact)
 		a.Verify = cleanStrings(a.Verify, e.Redact)

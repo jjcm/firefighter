@@ -56,9 +56,13 @@ type Source struct {
 	CAFile          string `json:"ca_file,omitempty"`
 }
 type Report struct {
+	Type           string `json:"type,omitempty"`
 	URL            string `json:"url"`
+	URLEnv         string `json:"url_env,omitempty"`
 	SecretEnv      string `json:"secret_env"`
 	BearerTokenEnv string `json:"bearer_token_env"`
+	TokenEnv       string `json:"token_env,omitempty"`
+	ChatID         string `json:"chat_id,omitempty"`
 }
 
 func Default() Config {
@@ -171,9 +175,6 @@ func (c Config) Validate() error {
 			return errors.New("rotation hooks require a name and absolute executable path")
 		}
 	}
-	if c.Report.URL != "" && c.Report.SecretEnv == "" {
-		return errors.New("report URL requires secret_env for signed events")
-	}
-	return nil
+	return c.Report.Validate()
 }
 func Seconds(n int) time.Duration { return time.Duration(n) * time.Second }

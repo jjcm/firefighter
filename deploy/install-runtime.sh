@@ -82,7 +82,7 @@ ff_atomic_install() {
 }
 
 ff_install() {
-  local source_dir=$1 work_dir=$2 target binary revision
+  local source_dir=$1 work_dir=$2 target binary revision channel
   ff_dependencies curl python3
   for target in /etc/firefighter /var/lib/firefighter /usr/local/bin /etc/firefighter-grokbot \
     /usr/local/bin/firefighter /usr/local/bin/firefighter-grokbot \
@@ -113,8 +113,13 @@ ff_install() {
     "$FF_GO" build -p 1 -trimpath -ldflags "-s -w -X main.version=$revision" -o "$work_dir/firefighter" ./cmd/firefighter
     "$FF_GO" build -p 1 -trimpath -ldflags '-s -w' -o "$work_dir/firefighter-grokbot" ./plugins/grokbot/cmd
   )
+  # Messaging is the final interactive step. Test it before committing files or
+  # starting the service; existing configured upgrades preserve their channel.
+  python3 "$source_dir/deploy/install-config.py" configure-report \
+    "$work_dir/firefighter" "$work_dir/config.json" "$work_dir/firefighter.env" /etc/firefighter/config.json
   # Validate with credentials in a child environment, never shell-source secrets.
   python3 "$source_dir/deploy/install-config.py" doctor "$work_dir/firefighter" "$work_dir/config.json" "$work_dir/firefighter.env"
+  channel=$(python3 "$source_dir/deploy/install-config.py" report-label "$work_dir/config.json")
 
   install -d -o 0 -g 0 -m 0700 /etc/firefighter /var/lib/firefighter
   install -d -o 0 -g 0 -m 0755 /usr/local/bin /etc/firefighter-grokbot
@@ -136,11 +141,7 @@ ff_install() {
   systemctl restart firefighter
   systemctl is-active --quiet firefighter || ff_die 'Firefighter did not stay active. Inspect journalctl -u firefighter before retrying.'
   ff_record_ack
-  printf '\nFirefighter is running as root and will start automatically at boot.\n'
-  printf '%s\n' \
-    'The agent now responds autonomously. No runtime approvals are requested.' \
-    'Configuration: /etc/firefighter/config.json. Credentials: /etc/firefighter/firefighter.env (root-only).' \
-    'Local audit: /var/lib/firefighter/audit.jsonl. Service log: journalctl -u firefighter.' \
-    'API account access is checked when the agent makes its first request; installation only checks local configuration.' \
-    'Optional Grokbot reporting is installed but requires its own destination configuration before enabling.'
+  printf '\nReporting: %s.\n' "$channel"
+  printf 'Firefighter started as root, autonomous and enabled at boot. Audit: /var/lib/firefighter/audit.jsonl\n'
+  printf 'Follow activity: journalctl -u firefighter -f\n'
 }

@@ -25,6 +25,8 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 PHRASE = 'I understand the risks and that this might delete my entire server.'
 KEY = 'sk-fixture-private-$quoted\\"-key'
+WEBHOOK = 'https://discord.com/api/webhooks/123456/fixture-private-webhook'
+TOKEN = '123456:fixture-private-notification-token'
 BASH = shutil.which('bash') or '/bin/bash'
 
 MOCK = r'''#!/usr/bin/env python3
@@ -127,8 +129,39 @@ else:raise RuntimeError('Unimplemented fixture command '+name)
 
 DOCTOR = r'''#!/usr/bin/env python3
 import json,os,pathlib,sys
-assert sys.argv[1]=='doctor'
+root=pathlib.Path(os.environ['FF_FIXTURE_ROOT'])
+command=sys.argv[1]
+if command=='telegram-pair':
+ assert sys.argv[sys.argv.index('--token-env')+1]=='FIREFIGHTER_NOTIFY_TOKEN'
+ assert os.environ['FIREFIGHTER_NOTIFY_TOKEN']==os.environ['FF_FIXTURE_NOTIFY_TOKEN']
+ code=sys.argv[sys.argv.index('--code')+1]
+ import re
+ assert re.fullmatch(r'FF-[a-f0-9]{24}',code)
+ with (root/'events').open('a') as f:f.write(json.dumps(['telegram-pair'])+'\n')
+ if os.environ.get('FF_FIXTURE_PAIR_FAILURE'):sys.exit(1)
+ print(json.dumps({'chat_id':'123456789'}));sys.exit(0)
+assert command in ('doctor','notify-test')
 config=json.loads(pathlib.Path(sys.argv[sys.argv.index('--config')+1]).read_text())
+with (root/'events').open('a') as f:f.write(json.dumps([command,config.get('report',{}).get('type','')])+'\n')
+if command=='notify-test':
+ report=config['report'];kind=report['type']
+ assert kind in ('discord','slack','telegram','grokbot')
+ if kind in ('discord','slack','grokbot'):
+  assert report['url_env']=='FIREFIGHTER_NOTIFY_URL'
+  assert os.environ[report['url_env']]==os.environ['FF_FIXTURE_NOTIFY_URL']
+ if kind=='telegram':
+  assert report['token_env']=='FIREFIGHTER_NOTIFY_TOKEN'
+  assert report['chat_id']==os.environ.get('FF_FIXTURE_CHAT_ID','123456789')
+ if kind in ('telegram','grokbot'):
+  assert os.environ['FIREFIGHTER_NOTIFY_TOKEN']==os.environ['FF_FIXTURE_NOTIFY_TOKEN']
+  if kind=='grokbot':assert report['bearer_token_env']=='FIREFIGHTER_NOTIFY_TOKEN'
+ assert 'url' not in report and 'secret_env' not in report
+ assert not (root/'stage/usr/local/bin/firefighter').exists() or os.environ.get('FF_FIXTURE_EXISTING_BINARY')
+ assert pathlib.Path(sys.argv[sys.argv.index('--config')+1]).stat().st_mode&0o777==0o600
+ attempts=root/'notify-attempts';count=int(attempts.read_text())+1 if attempts.exists() else 1;attempts.write_text(str(count))
+ # Even a future adapter accidentally printing credentials must not leak them.
+ print(os.environ.get('FIREFIGHTER_NOTIFY_URL','')+os.environ.get('FIREFIGHTER_NOTIFY_TOKEN',''))
+ sys.exit(1 if count<=int(os.environ.get('FF_FIXTURE_NOTIFY_FAILURES','0')) else 0)
 llm=config['llm']
 assert llm['backend'] in ('api','anthropic','command')
 if llm['backend']!='command':assert os.environ.get(llm['api_key_env'])==os.environ.get('FF_FIXTURE_EXPECTED_KEY')
@@ -155,7 +188,7 @@ class Fixture:
         for command in ('id','uname','stat','df','git','go','curl','tar','sha256sum','mktemp','install','chmod','chown','mv','rm','systemctl'):
             (self.bin/command).symlink_to(dispatcher)
         (self.root/'doctor-fixture').write_text(DOCTOR)
-        self.env=dict(os.environ,FF_FIXTURE_ROOT=str(self.root),FF_FIXTURE_REV=self.revision,FF_FIXTURE_EXPECTED_KEY=KEY,PATH=str(self.bin)+os.pathsep+os.environ['PATH'])
+        self.env=dict(os.environ,FF_FIXTURE_ROOT=str(self.root),FF_FIXTURE_REV=self.revision,FF_FIXTURE_EXPECTED_KEY=KEY,FF_FIXTURE_NOTIFY_URL=WEBHOOK,FF_FIXTURE_NOTIFY_TOKEN=TOKEN,PATH=str(self.bin)+os.pathsep+os.environ['PATH'])
         # Production has no path override. Only copied test scripts are mapped.
         for name in ('bootstrap.sh','install.sh','install-ack.sh','install-workspace.sh','install-runtime.sh'):
             p=self.repo/'deploy'/name
@@ -186,7 +219,7 @@ class Fixture:
         p=self.root/'events';return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
     def environment_events(self):
         p=self.root/'environment-events';return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
-    def run(self,kind='bootstrap',answer=None,provider='',model='',key=KEY,script=None,terminal=False):
+    def run(self,kind='bootstrap',answer=None,provider='',model='',key=KEY,script=None,terminal=False,messaging=None):
         file=self.repo/'deploy'/('bootstrap.sh' if kind=='bootstrap' else 'install.sh')
         code=script if script is not None else file.read_text()
         args=[BASH] if kind=='bootstrap' else [BASH,str(file)]
@@ -205,7 +238,8 @@ class Fixture:
         finally:os.close(writer)
         prompts=[]
         if answer is not None:prompts.append((b'\n> ',answer))
-        prompts.extend([(b'Provider [1]: ',provider),(b']: ',model),(b'API key (hidden): ',key)])
+        prompts.extend([(b'Provider [1]: ',provider),(b'Model [',model),(b'API key (hidden): ',key)])
+        messages=list(messaging) if messaging is not None else [(b'Messaging [1]: ','5')]
         output=bytearray();pending=bytearray();deadline=time.monotonic()+20;status=None
         try:
             while time.monotonic()<deadline:
@@ -216,8 +250,17 @@ class Fixture:
                         if exc.errno!=errno.EIO:raise
                         chunk=b''
                     output.extend(chunk);pending.extend(chunk)
-                    if prompts and prompts[0][0] in pending:
-                        marker,value=prompts.pop(0)
+                    # Existing credentials skip provider prompts. Match each
+                    # optional provider prompt independently, then enforce the
+                    # message wizard's explicit sequence.
+                    for i,(marker,value) in enumerate(prompts):
+                        if marker in pending:
+                            prompts.pop(i)
+                            pending=bytearray(pending.split(marker,1)[1])
+                            os.write(master,(value+'\n').encode())
+                            break
+                    if messages and messages[0][0] in pending:
+                        marker,value=messages.pop(0)
                         pending=bytearray(pending.split(marker,1)[1])
                         os.write(master,(value+'\n').encode())
                 done,status_now=os.waitpid(pid,os.WNOHANG)
@@ -346,6 +389,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((folder/'firefighter.env').stat().st_mode&0o777,0o600)
         self.assertNotIn(KEY,out);self.assertNotIn(KEY,json.dumps(self.f.events()))
         config=json.loads((folder/'config.json').read_text())
+        self.assertEqual(config['report'],{'type':'none'})
+        self.assertIn('Local only selected',out)
         self.assertEqual(config['llm']['api_key_env'],'OPENROUTER_API_KEY')
         self.assertEqual(config['llm']['model'],'deepseek/deepseek-v4.1-flash-1017')
         self.assertTrue(any(e[0]=='git' and 'fetch' in e and e[-1]==self.f.revision for e in self.f.events()))
@@ -373,12 +418,131 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual((folder/'config.json').read_text(),original_config)
                 self.assertEqual((folder/'firefighter.env').read_text(),original_env)
                 self.assertNotIn('API key (hidden)',out)
+                self.assertIn('unattended upgrade preserves local-only reporting',out)
     def test_existing_blank_configuration_gets_interactive_provider_setup(self):
         self.f.acknowledgment();folder=self.f.stage/'etc/firefighter'
         shutil.copyfile(REPO/'deploy/firefighter-config.json',folder/'config.json')
         (folder/'firefighter.env').write_text('OPENROUTER_API_KEY=\nKEEP_ME=value\n')
         code,out=self.f.run(terminal=True);self.assertEqual(code,0,out)
         self.assertIn('KEEP_ME=value',(folder/'firefighter.env').read_text())
+    def test_message_providers_test_before_doctor_install_and_start_and_hide_credentials(self):
+        for choice,kind,url in (('', 'discord',WEBHOOK),('3','slack','https://hooks.slack.com/services/T123/B123/fixture-private-secret'),('4','grokbot','https://grok.fixture.example/routine/fixture-private-secret')):
+            with self.subTest(kind=kind):
+                f=Fixture()
+                try:
+                    f.env['FF_FIXTURE_NOTIFY_URL']=url
+                    prompts=[(b'Messaging [1]: ',choice),(b'Webhook URL (hidden): ',url)]
+                    if kind=='grokbot':prompts.append((b'Grok Bot webhook key (hidden): ',TOKEN))
+                    code,out=f.run(answer=PHRASE,messaging=prompts)
+                    self.assertEqual(code,0,out)
+                    config=json.loads((f.stage/'etc/firefighter/config.json').read_text())
+                    expected={'type':kind,'url_env':'FIREFIGHTER_NOTIFY_URL'}
+                    if kind=='grokbot':expected['bearer_token_env']='FIREFIGHTER_NOTIFY_TOKEN'
+                    self.assertEqual(config['report'],expected)
+                    env=(f.stage/'etc/firefighter/firefighter.env').read_text()
+                    self.assertIn(url,env)
+                    self.assertEqual((f.stage/'etc/firefighter/config.json').stat().st_mode&0o777,0o600)
+                    self.assertEqual((f.stage/'etc/firefighter/firefighter.env').stat().st_mode&0o777,0o600)
+                    self.assertIn('Test accepted. Check your chat',out)
+                    self.assertIn('Reporting: '+{'discord':'Discord','slack':'Slack','grokbot':'Grok Bot'}[kind],out)
+                    self.assertNotIn(url,out);self.assertNotIn(TOKEN,out);self.assertNotIn(KEY,out)
+                    self.assertNotIn(url,json.dumps(f.events()));self.assertNotIn(TOKEN,json.dumps(f.events()))
+                    events=f.events();notification=next(i for i,e in enumerate(events) if e[0]=='notify-test')
+                    self.assertEqual(len([e for e in events[:notification] if e[:2]==['go','build']]),2)
+                    self.assertFalse(any(e[0] in ('doctor','systemctl') or (e[0]=='install' and '-d' not in e) for e in events[:notification]))
+                    doctor=next(i for i,e in enumerate(events) if e[0]=='doctor')
+                    install=next(i for i,e in enumerate(events) if e[0]=='install' and '-d' not in e)
+                    start=next(i for i,e in enumerate(events) if e[:2]==['systemctl','restart'])
+                    self.assertLess(notification,doctor);self.assertLess(doctor,install);self.assertLess(install,start)
+                finally:f.close()
+    def test_telegram_private_pairing_and_hidden_token(self):
+        prompts=[(b'Messaging [1]: ','2'),(b'Telegram bot token (hidden): ',TOKEN),
+                 (b'After sending it, press Enter to pair; M = manual chat ID, C = change channel: ','')]
+        code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
+        report=json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['report']
+        self.assertEqual(report,{'type':'telegram','token_env':'FIREFIGHTER_NOTIFY_TOKEN','chat_id':'123456789'})
+        self.assertNotIn(TOKEN,out);self.assertNotIn(TOKEN,json.dumps(self.f.events()))
+        self.assertRegex(out,r'FF-[a-f0-9]{24}')
+        self.assertIn('Private chat paired.',out)
+        self.assertEqual([e[0] for e in self.f.events() if e[0] in ('telegram-pair','notify-test','doctor')],['telegram-pair','notify-test','doctor'])
+    def test_telegram_pair_failure_allows_manual_group_chat(self):
+        self.f.env['FF_FIXTURE_PAIR_FAILURE']='1';self.f.env['FF_FIXTURE_CHAT_ID']='-100123456'
+        marker=b'After sending it, press Enter to pair; M = manual chat ID, C = change channel: '
+        prompts=[(b'Messaging [1]: ','2'),(b'Telegram bot token (hidden): ',TOKEN),
+                 (marker,''),(marker,'m'),(b'Telegram chat ID: ','-100123456')]
+        code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
+        self.assertIn('Pairing did not succeed',out)
+        self.assertEqual(json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['report']['chat_id'],'-100123456')
+        self.assertNotIn(TOKEN,out)
+    def test_telegram_pairing_can_change_channel_without_persisting_token(self):
+        prompts=[(b'Messaging [1]: ','2'),(b'Telegram bot token (hidden): ',TOKEN),
+                 (b'After sending it, press Enter to pair; M = manual chat ID, C = change channel: ','c'),
+                 (b'Messaging [1]: ','5')]
+        code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
+        self.assertEqual(json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['report'],{'type':'none'})
+        self.assertNotIn(TOKEN,(self.f.stage/'etc/firefighter/firefighter.env').read_text())
+        self.assertFalse(any(e[0] in ('telegram-pair','notify-test') for e in self.f.events()))
+    def test_failed_message_test_retries_before_start(self):
+        self.f.env['FF_FIXTURE_NOTIFY_FAILURES']='1'
+        prompts=[(b'Messaging [1]: ','1'),(b'Webhook URL (hidden): ',WEBHOOK),(b'Test failed [1]: ','')]
+        code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
+        self.assertIn('The test failed',out);self.assertIn('Test accepted',out)
+        self.assertEqual(len([e for e in self.f.events() if e[0]=='notify-test']),2)
+        self.assertNotIn(WEBHOOK,out)
+    def test_failed_message_test_can_reconfigure(self):
+        self.f.env['FF_FIXTURE_NOTIFY_FAILURES']='1'
+        prompts=[(b'Messaging [1]: ','1'),(b'Webhook URL (hidden): ',WEBHOOK),(b'Test failed [1]: ','2'),
+                 (b'Messaging [1]: ','1'),(b'Webhook URL (hidden): ',WEBHOOK)]
+        code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
+        self.assertEqual(out.count('Final step: where should Firefighter report?'),2)
+        self.assertEqual(len([e for e in self.f.events() if e[0]=='notify-test']),2)
+    def test_failed_message_test_can_explicitly_select_local_only(self):
+        self.f.env['FF_FIXTURE_NOTIFY_FAILURES']='99'
+        prompts=[(b'Messaging [1]: ','1'),(b'Webhook URL (hidden): ',WEBHOOK),(b'Test failed [1]: ','3')]
+        code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
+        self.assertEqual(json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['report'],{'type':'none'})
+        self.assertNotIn('FIREFIGHTER_NOTIFY_URL',(self.f.stage/'etc/firefighter/firefighter.env').read_text())
+        self.assertIn('Reporting: Local only.',out)
+    def test_failed_message_test_cancel_preserves_existing_files_and_service(self):
+        old_config,old_env=self.f.configured();self.f.env['FF_FIXTURE_NOTIFY_FAILURES']='99'
+        prompts=[(b'Messaging [1]: ','1'),(b'Webhook URL (hidden): ',WEBHOOK),(b'Test failed [1]: ','4')]
+        code,out=self.f.run(terminal=True,messaging=prompts);self.assertNotEqual(code,0,out)
+        self.assertIn('Existing configuration was not changed',out)
+        folder=self.f.stage/'etc/firefighter'
+        self.assertEqual((folder/'config.json').read_text(),old_config)
+        self.assertEqual((folder/'firefighter.env').read_text(),old_env)
+        self.assertFalse(any(e[0] in ('doctor','systemctl') or (e[0]=='install' and '-d' not in e) for e in self.f.events()))
+    def test_upgrade_preserves_configured_channels_and_explicit_local_only(self):
+        for report,extra in (({'type':'discord','url_env':'CUSTOM_NOTIFY_URL'},'CUSTOM_NOTIFY_URL="'+WEBHOOK+'"\n'),
+                             ({'url':'http://127.0.0.1:9797/events','secret_env':'OLD_REPORT_SECRET'},'OLD_REPORT_SECRET="legacy-private-signing-secret"\n'),
+                             ({'type':'none'},'')):
+            for terminal in (False,True):
+                with self.subTest(report=report,terminal=terminal):
+                    f=Fixture()
+                    try:
+                        _,env=f.configured();folder=f.stage/'etc/firefighter'
+                        config=json.loads((folder/'config.json').read_text());config['report']=report
+                        text=json.dumps(config,indent=4)+'\n';env+=extra
+                        (folder/'config.json').write_text(text);(folder/'firefighter.env').write_text(env)
+                        code,out=f.run(terminal=terminal);self.assertEqual(code,0,out)
+                        self.assertEqual((folder/'config.json').read_text(),text)
+                        self.assertEqual((folder/'firefighter.env').read_text(),env)
+                        self.assertNotIn('Messaging [',out)
+                        self.assertFalse(any(e[0]=='notify-test' for e in f.events()))
+                    finally:f.close()
+    def test_unconfigured_existing_api_credentials_still_prompt_messaging_with_tty(self):
+        self.f.configured()
+        code,out=self.f.run(terminal=True);self.assertEqual(code,0,out)
+        self.assertNotIn('Provider [',out);self.assertIn('Messaging [1]',out)
+        self.assertEqual(json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['report'],{'type':'none'})
+    def test_incomplete_existing_channel_needs_tty_instead_of_silent_skip(self):
+        self.f.configured();path=self.f.stage/'etc/firefighter/config.json'
+        config=json.loads(path.read_text());config['report']={'type':'discord','url_env':'MISSING_URL'}
+        original=json.dumps(config);path.write_text(original)
+        code,out=self.f.run();self.assertNotEqual(code,0,out)
+        self.assertIn('Messaging setup needs an interactive terminal',out)
+        self.assertEqual(path.read_text(),original)
+        self.assertFalse(any(e[0] in ('doctor','systemctl') or (e[0]=='install' and '-d' not in e) for e in self.f.events()))
     def test_build_failure_leaves_existing_installation_untouched(self):
         original_config,original_env=self.f.configured();self.f.env['FF_FIXTURE_BUILD_FAILURE']='1'
         binary=self.f.stage/'usr/local/bin/firefighter';binary.write_text('existing binary')
