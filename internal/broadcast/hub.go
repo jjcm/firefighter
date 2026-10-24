@@ -68,6 +68,7 @@ func Open(cfg Config) (*Hub, error) {
 	if err != nil {
 		return fail(err)
 	}
+	seedCVEStatuses(&state, cfg)
 	return &Hub{config: cfg, state: state, key: key, lock: lock, now: time.Now}, nil
 }
 func (h *Hub) Close() error {
@@ -124,6 +125,10 @@ func (h *Hub) PollOnce(ctx context.Context, source ScheduledSource) error {
 		next.Sources[k] = v
 	}
 	next.Notices = append([]storedNotice(nil), h.state.Notices...)
+	next.CVEStatuses = make(map[string]cveLifecycle, len(h.state.CVEStatuses))
+	for id, status := range h.state.CVEStatuses {
+		next.CVEStatuses[id] = status
+	}
 	now := h.now().UTC()
 	ss := previous
 	ss.Fingerprint = source.Fingerprint
@@ -150,6 +155,13 @@ func (h *Hub) PollOnce(ctx context.Context, source ScheduledSource) error {
 		}
 		for _, item := range result.Items {
 			item.Source = source.Name
+			withdrawn := false
+			if isNVDSource(h.config, source.Name) {
+				if status, ok := nvdLifecycle(item.ID, item.Title, item.Body, item.ModifiedAt); ok {
+					updateCVEStatus(next.CVEStatuses, item.ID, status)
+					withdrawn = status.Withdrawn
+				}
+			}
 			raw, err := json.Marshal(item)
 			if err != nil {
 				return errors.New("cannot encode upstream notice")
@@ -165,7 +177,7 @@ func (h *Hub) PollOnce(ctx context.Context, source ScheduledSource) error {
 			notice := publicNotice(item, source.Name, now)
 			next.Sequence++
 			notice.Seq = next.Sequence
-			next.Notices = append(next.Notices, storedNotice{Notice: notice, Hash: fingerprint})
+			next.Notices = append(next.Notices, storedNotice{Notice: notice, Hash: fingerprint, Withdrawn: withdrawn})
 			ss.Published++
 		}
 		ss.Cursor = result.Cursor
@@ -182,6 +194,7 @@ func (h *Hub) PollOnce(ctx context.Context, source ScheduledSource) error {
 	if remove > 0 {
 		next.Notices = append([]storedNotice(nil), next.Notices[remove:]...)
 	}
+	pruneCVEStatuses(&next)
 	if err := writeState(h.config.StateDir, &next); err != nil {
 		return err
 	}
@@ -265,8 +278,9 @@ func (h *Hub) Batch(after uint64, limit int) (Batch, error) {
 }
 
 // Recent is an informational board view, deliberately separate from the signed
-// sequential client feed. It shows only currently configured sources; filtering
-// or reordering this view never changes stored history or delivery cursors.
+// sequential client feed. It shows only currently configured sources and omits
+// notices referencing CVEs known to be withdrawn. Filtering or reordering this
+// view never changes stored history or delivery cursors.
 type Recent struct {
 	Version    int       `json:"version"`
 	Kind       string    `json:"kind"`
@@ -286,7 +300,7 @@ func (h *Hub) Recent(limit int) (Recent, error) {
 	}
 	indices := make([]int, 0, len(h.state.Notices))
 	for i, entry := range h.state.Notices {
-		if active[entry.Notice.Source] {
+		if active[entry.Notice.Source] && !entry.Withdrawn && !noticeWithdrawn(entry.Notice, h.state.CVEStatuses) {
 			indices = append(indices, i)
 		}
 	}

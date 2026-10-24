@@ -195,7 +195,6 @@
     const container = $("source-status-list");
     if (!state.status) {
       container.replaceChildren(node("p", "muted", "Source status is unavailable."));
-      $("source-updated").textContent = "Coverage cannot be confirmed right now.";
       return;
     }
     const sources = Array.isArray(state.status.sources) ? state.status.sources.filter((source) => source && typeof source.name === "string").slice(0, 30) : [];
@@ -209,15 +208,13 @@
         const label = node("span", "source-status-name", sourceName(boundedString(source.name, 100)) || "Unnamed source");
         let description = status === "healthy" ? "Polling normally" : status === "degraded" ? "Upstream unavailable" : "Waiting for first poll";
         if (source.error_code === "not_configured") description = "Credential not configured";
-        const text = node("span", `source-status-state ${status}`, description);
+        const text = node("span", status === "healthy" ? "visually-hidden" : `source-status-state ${status}`, status === "healthy" ? `: ${description}` : description);
         if (source.last_success && dateValue(source.last_success)) row.title = `Last successful intake: ${new Date(source.last_success).toLocaleString()}`;
         row.append(dot, label, text);
         return row;
       });
       container.replaceChildren(...rows);
     }
-    const date = dateValue(state.status.server_time);
-    $("source-updated").textContent = date ? `Hub status · ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })} · refreshes every 30s` : "Source status received. Refreshes every 30s.";
   }
 
   function renderFeedState() {
@@ -262,32 +259,6 @@
   $("refresh-notices").addEventListener("click", refresh);
   $("show-more").addEventListener("click", () => { state.visible += 6; renderNotices(); });
 
-  const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
-  function activateTab(selected) {
-    for (const tab of tabs) {
-      const active = tab === selected;
-      tab.setAttribute("aria-selected", String(active));
-      tab.tabIndex = active ? 0 : -1;
-      $(tab.getAttribute("aria-controls")).hidden = !active;
-    }
-  }
-  for (const tab of tabs) {
-    tab.addEventListener("click", () => activateTab(tab));
-    tab.addEventListener("keydown", (event) => {
-      let index = tabs.indexOf(tab);
-      if (event.key === "ArrowRight") index = (index + 1) % tabs.length;
-      else if (event.key === "ArrowLeft") index = (index + tabs.length - 1) % tabs.length;
-      else if (event.key === "Home") index = 0;
-      else if (event.key === "End") index = tabs.length - 1;
-      else return;
-      event.preventDefault(); activateTab(tabs[index]); tabs[index].focus();
-    });
-  }
-  // On the deployed HTTPS site, copyable examples use that exact public origin.
-  // Local previews intentionally retain a placeholder rather than a loopback URL.
-  if (window.location.protocol === "https:") {
-    for (const code of document.querySelectorAll("pre code")) code.textContent = code.textContent.replaceAll("https://YOUR_NOTICE_HUB", window.location.origin);
-  }
   for (const button of document.querySelectorAll("[data-copy]")) {
     button.addEventListener("click", async () => {
       try {

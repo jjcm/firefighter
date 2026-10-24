@@ -15,7 +15,3 @@ jobs:
       - run: go vet ./...
       - run: make test-install
       - run: make linux
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-binaries
-          path: dist/

@@ -27,14 +27,16 @@ type sourceState struct {
 	ErrorCode   string    `json:"error_code"`
 }
 type storedNotice struct {
-	Notice Notice `json:"notice"`
-	Hash   string `json:"hash"`
+	Notice    Notice `json:"notice"`
+	Hash      string `json:"hash"`
+	Withdrawn bool   `json:"withdrawn,omitempty"`
 }
 type diskState struct {
-	Version  int                    `json:"version"`
-	Sequence uint64                 `json:"sequence"`
-	Sources  map[string]sourceState `json:"sources"`
-	Notices  []storedNotice         `json:"notices"`
+	Version     int                     `json:"version"`
+	Sequence    uint64                  `json:"sequence"`
+	Sources     map[string]sourceState  `json:"sources"`
+	Notices     []storedNotice          `json:"notices"`
+	CVEStatuses map[string]cveLifecycle `json:"cve_statuses,omitempty"`
 }
 
 const maxStateBytes = 128 << 20
@@ -162,6 +164,11 @@ func readState(dir string) (diskState, error) {
 	if s.Version != 1 || s.Sources == nil || s.Sequence == ^uint64(0) {
 		return s, errors.New("unsupported durable hub state")
 	}
+	for id, status := range s.CVEStatuses {
+		if !validCVEID(id) || status.ModifiedAt.IsZero() {
+			return s, errors.New("invalid stored CVE lifecycle")
+		}
+	}
 	for i, entry := range s.Notices {
 		if entry.Notice.Seq == 0 || entry.Notice.Seq > s.Sequence || !entry.Notice.Untrusted || entry.Hash == "" {
 			return s, errors.New("invalid stored notice")
@@ -198,6 +205,7 @@ func boundedState(s *diskState, limit int) ([]byte, error) {
 	}
 	if remove > 0 {
 		s.Notices = append([]storedNotice(nil), s.Notices[remove:]...)
+		pruneCVEStatuses(s)
 	}
 	b, err = json.Marshal(s)
 	if err != nil {

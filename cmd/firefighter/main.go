@@ -154,7 +154,7 @@ func buildPlanner(c config.Config) (engine.Planner, error) {
 	if key == "" {
 		return nil, fmt.Errorf("LLM credential environment variable %s is not set", c.LLM.APIKeyEnv)
 	}
-	return planner.NewAPI(planner.APIConfig{BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: key, Timeout: config.Seconds(c.LLM.TimeoutSeconds), MaxActions: c.MaxActionsPerRound, MaxResponseBytes: 1 << 20, JSONMode: c.LLM.JSONMode})
+	return planner.NewAPI(planner.APIConfig{Backend: c.LLM.Backend, BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: key, Timeout: config.Seconds(c.LLM.TimeoutSeconds), MaxActions: c.MaxActionsPerRound, MaxResponseBytes: 1 << 20, JSONMode: c.LLM.JSONMode})
 }
 func buildSources(c config.Config) ([]engine.ScheduledSource, error) {
 	var result []engine.ScheduledSource
@@ -199,11 +199,11 @@ func doctor(c config.Config) error {
 		}
 		fmt.Printf("%s %s\n", status, label)
 	}
-	check(runtime.GOOS == "linux", "Linux host (Ubuntu is the primary target)")
+	check(runtime.GOOS == "linux", "Linux host")
 	check(c.Observe || !c.RequireRoot || os.Geteuid() == 0, "root execution or observation mode")
-	if c.LLM.Backend == "api" {
+	if c.LLM.Backend == "api" || c.LLM.Backend == "anthropic" {
 		check(os.Getenv(c.LLM.APIKeyEnv) != "", "LLM credential: "+c.LLM.APIKeyEnv)
-		_, err := planner.NewAPI(planner.APIConfig{BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: "offline-config-check", Timeout: config.Seconds(c.LLM.TimeoutSeconds), MaxActions: c.MaxActionsPerRound})
+		_, err := planner.NewAPI(planner.APIConfig{Backend: c.LLM.Backend, BaseURL: c.LLM.BaseURL, Model: c.LLM.Model, APIKey: "offline-config-check", Timeout: config.Seconds(c.LLM.TimeoutSeconds), MaxActions: c.MaxActionsPerRound, JSONMode: c.LLM.JSONMode})
 		check(err == nil, "API endpoint and planner configuration")
 	} else {
 		_, err := buildPlanner(c)
@@ -263,7 +263,7 @@ func status(c config.Config) error {
 	return enc.Encode(output)
 }
 func usage() {
-	fmt.Print(`firefighter — autonomous Ubuntu incident response
+	fmt.Print(`firefighter — autonomous Linux incident response
 
 Usage: firefighter <command> [--config /etc/firefighter/config.json] [--observe]
 

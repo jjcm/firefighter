@@ -7,10 +7,10 @@ source of truth for upstream availability. The hosted deployment and default hub
 configuration use Ubuntu notices, CISA KEV, and NVD. Paid X intake is currently
 disabled to stop API spend; the integration remains available as an opt-in source.
 
-The hub collects public advisory data once. Subscribers receive signed notices,
+The hub collects public advisory data once. Clients receive signed notices,
 then use their own inventory, model credentials, and local root runner to assess
 and repair their servers. The hub has no action, shell, policy-update, approval,
-or remote-remediation endpoint. Subscription does not upload client inventory,
+or remote-remediation endpoint. The notice feed does not upload client inventory,
 command output, credentials, or private incident records to the hub.
 
 ## Components and paths
@@ -29,7 +29,7 @@ command output, credentials, or private incident records to the hub.
 | Hub state and signing key | `/var/lib/firefighter-hub`, directory `0700`, files `0600` |
 | Website assets | `/opt/firefighter/web` |
 | Public bootstrap | `/opt/firefighter/install.sh`, served only at `/install.sh` |
-| Public downloads | `/opt/firefighter/downloads`, served directly by nginx |
+| Public publisher key | `/opt/firefighter/downloads/firefighter-hub.pub`, the only allowed download path |
 | ACME challenge webroot | `/var/lib/letsencrypt` |
 | Administrator access | SSH alias `firefighter-host`, user `firefighter-admin` |
 
@@ -109,8 +109,9 @@ redistributing and verifying a new public pin on every client.
 
 The supplied [nginx configuration](../deploy/nginx.conf) matches this deployment.
 It proxies the site and APIs to the loopback hub, overwrites `X-Real-IP` and
-`X-Forwarded-For` with nginx's observed client address, and serves downloads
-directly from `/opt/firefighter/downloads`. The exact `/install.sh` route serves
+`X-Forwarded-For` with nginx's observed client address, and exposes only the exact
+`/downloads/firefighter-hub.pub` public-key path. Other `/downloads/` paths return
+404; prebuilt Firefighter executables are not distributed. The exact `/install.sh` route serves
 only `/opt/firefighter/install.sh` as plain text; it does not expose the deployment
 directory. The hub maps `/faq` and `/faq/` to the public `faq.html` asset. These web
 routes do not change the signed notice schema or add an API for running commands.
@@ -171,69 +172,80 @@ root-only `/etc/firefighter-hub/x-source.disabled.json` file. Keep the credentia
 the private hub environment file. Review the query and provider pricing before
 re-enabling. No client configuration change is required.
 
-## Publish downloads and the public key
+## Publish the installer and public key
 
-Only public release artifacts belong in the download directory. Publish both
-responder architectures, the bootstrap configuration, environment template,
-service, and public key before generating their checksum manifest:
+The public installer retrieves a pinned source revision from the public GitHub
+repository and compiles it on each client. Do not publish Firefighter binaries,
+configuration templates, environment files, or checksum manifests to the website.
+The installer obtains its build and service files from the reviewed source commit.
+
+Publish the implementation commit first. Then update `FF_SOURCE_REV` in
+`deploy/bootstrap.sh` to that exact 40-character commit ID, commit the pin change,
+and publish the updated bootstrap. This two-commit workflow ensures the referenced
+implementation already exists in GitHub. Do not replace the pin with a moving
+branch name. The bootstrap checks that the fetched checkout matches its pin.
 
 ```sh
-sudo install -m 0644 dist/firefighter-linux-amd64 dist/firefighter-linux-arm64 \
-  /opt/firefighter/downloads/
-sudo install -m 0644 deploy/firefighter-config.json \
-  /opt/firefighter/downloads/firefighter-config.json
-sudo install -m 0644 deploy/firefighter-bootstrap.env.example \
-  /opt/firefighter/downloads/firefighter.env.example
-sudo install -m 0644 deploy/firefighter.service \
-  /opt/firefighter/downloads/firefighter.service
 sudo -u firefighter-hub /usr/local/bin/firefighter-hub public-key \
   --config /etc/firefighter-hub/config.json \
   | sudo tee /opt/firefighter/downloads/firefighter-hub.pub >/dev/null
-(cd /opt/firefighter/downloads && sha256sum \
-  firefighter-linux-amd64 firefighter-linux-arm64 firefighter-config.json \
-  firefighter.env.example firefighter.service firefighter-hub.pub) \
-  | sudo tee /opt/firefighter/downloads/SHA256SUMS >/dev/null
 sudo install -m 0644 deploy/bootstrap.sh /opt/firefighter/install.sh
 ```
 
-The `public-key` command prints only the public Ed25519 key. The public download
-lets clients obtain that key, but they should compare it with an independently
-verified operator value before pinning it. Ensure the public configuration and
-bootstrap's embedded publisher pin both match that verified key; the installer
-rejects a mismatched template and preserves existing client pins. The bootstrap verifies downloaded
-artifacts against `SHA256SUMS`; a manifest fetched from the same server does not
-independently authenticate a release. Publish only reviewed configuration without
-credentials, and keep real environment files outside these public paths.
+The `public-key` command prints only the public Ed25519 key. Clients should compare
+it with an independently verified operator value before pinning it. The source
+configuration template must contain that verified publisher pin. Existing client
+configuration, including the pin, is preserved on upgrades. Keep real environment
+files, source checkouts, and hub state outside public paths.
 
-## Configure a subscribing Ubuntu server
+The nginx configuration allows only the exact `/install.sh` and
+`/downloads/firefighter-hub.pub` distribution paths; its old general downloads
+location is disabled. The Go compiler bootstrap downloads official compiler
+archives from `go.dev` and checks them against HTTPS release metadata. This is a
+build prerequisite, not a prebuilt Firefighter release.
 
-From an interactive Ubuntu terminal:
+## Install a client
+
+From an interactive terminal on a Linux server with a running systemd manager:
 
 ```sh
 curl -fsSL https://45.76.243.18/install.sh | sudo bash
 ```
 
-On the first installation, type this exact sentence when prompted:
+The first installation displays an exact risk-acknowledgment sentence. The operator
+must type it through `/dev/tty`; no terminal or a different sentence causes an
+exit before writes. After successful startup, a root-owned, mode `0600` record at
+`/etc/firefighter/install-risk-acknowledgment` skips that prompt on later upgrades.
+This is installation consent, not a runtime approval step.
 
-```text
-I understand the risks and that this might delete my entire server.
-```
+New setup asks for the provider, model, and an API key with echo disabled:
 
-The prompt reads `/dev/tty`, not the piped script. No terminal or a different
-sentence causes an exit before writes. A successful installation stores a
-root-owned, mode `0600` acknowledgment at
-`/etc/firefighter/install-risk-acknowledgment`; a valid record skips this prompt on
-later upgrades. This does not add runtime approvals to the autonomous responder.
+| Provider | Default model | Backend | Environment variable |
+| --- | --- | --- | --- |
+| OpenRouter (default) | `deepseek/deepseek-v4.1-flash-1017` | `api` | `OPENROUTER_API_KEY` |
+| OpenAI | `gpt-6.1-sol` | `api` | `OPENAI_API_KEY` |
+| Anthropic | `claude-sonnet-5-5` | `anthropic` | `ANTHROPIC_API_KEY` |
 
-The bootstrap selects amd64 or arm64, preserves existing configuration and
-secrets, and does not start or restart the daemon. Its new-install configuration already
-subscribes to the central signed feed and uses OpenRouter's
-`deepseek/deepseek-v4.1-flash-1017` with `OPENROUTER_API_KEY`. Review the installed
-publisher pin, then configure credentials and run the service using the
-[Ubuntu setup instructions](../README.md#run-on-ubuntu). The binary bootstrap does
-not install the Grok Bot bridge; the source installer includes it.
-After upgrading a configured, running responder, restart it separately at an
-appropriate point to load the new binary.
+The model can be overridden. OpenRouter uses `https://openrouter.ai/api/v1` with
+JSON-object mode; OpenAI uses `https://api.openai.com/v1` with strict structured
+output. Anthropic uses `https://api.anthropic.com/v1` and its native Messages API,
+with `json_mode` disabled. [Planner details](../internal/planner/README.md) describe
+provider output validation.
+
+The installer can install missing `git`, `curl`, and `python3` using apt, dnf, yum,
+pacman, or zypper. It uses an installed Go version meeting `go.mod` or downloads a
+checksum-verified official host toolchain into its private temporary workspace.
+Architectures without an automatic toolchain download need a compatible Go
+compiler installed first. The Firefighter executables are compiled locally.
+
+The new configuration uses the central signed feed. Complete existing
+configuration and credentials are preserved byte-for-byte. After the source build
+and offline `doctor` validation pass, the installer enables the responder at boot,
+starts or restarts it, and checks that the service is active. The installer does
+not make model API calls; account access, model availability, and balance are
+checked when the running service makes its first request. Watch the journal for
+errors. The optional Grok Bot bridge is built and installed but requires a reporting
+destination before it is enabled; see [reporting setup](../README.md#connect-grok-bot).
 
 For an existing configuration that polls upstream sources directly, replace the complete `sources`
 array and configure the model API as needed. This fragment follows the public
@@ -247,7 +259,7 @@ bootstrap defaults; substitute the independently verified publisher key:
       "type": "broadcast",
       "url": "https://45.76.243.18",
       "public_key": "YOUR_VERIFIED_BASE64_ED25519_PUBLIC_KEY",
-      "interval_seconds": 30
+      "interval_seconds": 15
     }
   ],
   "llm": {
@@ -292,7 +304,7 @@ credentials, paid access, or query permissions are unavailable; the other source
 can continue. A client's successful signed poll does not prove every upstream
 source is healthy. Current per-source health is presented by the hub and board.
 
-On a subscribing server, use `firefighter doctor`, `firefighter status`, and the
+On a client server, use `firefighter doctor`, `firefighter status`, and the
 `firefighter` systemd journal with its configured environment. Keep routine host
 reviews enabled: a central notice is not required for the local model to detect
 existing exposure or suspicious evidence. Signed retention gaps are explicitly
@@ -300,7 +312,7 @@ queued as local coverage-gap incidents before the client resumes retained histor
 
 Monitor hub state size, retained notice count, disk space, and upstream rate-limit
 health. Retention bounds public history, while the responder's audit has its own
-retention/archival requirements. Source polling and client subscriptions do not
+retention/archival requirements. Source polling and client feed requests do not
 need additional active hub instances; running duplicate ingesters can duplicate
 paid upstream usage. Keep backups of hub state and signing identity outside the
 public webroot. See [the broadcast protocol](broadcast.md) for cursor and recovery

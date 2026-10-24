@@ -40,7 +40,7 @@ ff_require_ack() {
 }
 
 ff_record_ack() {
-  # Call only after all installation steps and daemon-reload succeed.
+  # Call only after installation and automatic service startup succeed.
   [[ ! -e "$FF_ACK_PATH" ]] || return 0
   local marker
   marker=$(mktemp /etc/firefighter/.install-risk-acknowledgment.XXXXXX)

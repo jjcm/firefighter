@@ -121,16 +121,19 @@ func (c Config) Validate() error {
 		return errors.New("record_retention_days must be 1..365")
 	}
 	switch c.LLM.Backend {
-	case "api":
+	case "api", "anthropic":
 		if c.LLM.BaseURL == "" || c.LLM.APIKeyEnv == "" || c.LLM.Model == "" {
 			return errors.New("API backend requires base_url, model, and api_key_env")
+		}
+		if c.LLM.Backend == "anthropic" && c.LLM.JSONMode {
+			return errors.New("Anthropic uses native structured output; json_mode must be false")
 		}
 	case "command":
 		if len(c.LLM.Command) == 0 {
 			return errors.New("command backend requires llm.command")
 		}
 	default:
-		return errors.New("llm.backend must be api or command")
+		return errors.New("llm.backend must be api, anthropic, or command")
 	}
 	names := map[string]bool{}
 	for _, s := range c.Sources {

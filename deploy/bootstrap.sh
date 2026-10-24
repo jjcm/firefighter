@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-PATH=/usr/sbin:/usr/bin:/sbin:/bin
+PATH=/usr/local/go/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 umask 077
+
+# Fixed reviewed source revision; update only after publishing the source commit.
+FF_SOURCE_REV=daa8c8a917291128a13e5740c8bf7c294ae1a300
+FF_SOURCE_REPOSITORY=https://github.com/jjcm/firefighter.git
 
 # Self-contained copy of install-ack.sh; deploy/test_install.py checks equality.
 # BEGIN FIREFIGHTER INSTALL ACK
@@ -45,7 +49,7 @@ ff_require_ack() {
 }
 
 ff_record_ack() {
-  # Call only after all installation steps and daemon-reload succeed.
+  # Call only after installation and automatic service startup succeed.
   [[ ! -e "$FF_ACK_PATH" ]] || return 0
   local marker
   marker=$(mktemp /etc/firefighter/.install-risk-acknowledgment.XXXXXX)
@@ -59,79 +63,46 @@ ff_record_ack() {
 main() {
   [[ $# -eq 0 ]] || ff_die 'This installer accepts no arguments or acknowledgment bypass flags.'
   [[ "$(id -u)" == 0 ]] || ff_die 'Run as root: curl -fsSL https://45.76.243.18/install.sh | sudo bash'
-  [[ "$(uname -s)" == Linux ]] || ff_die 'This installer requires Ubuntu Linux.'
-  [[ -r /etc/os-release ]] || ff_die 'Cannot identify this Linux distribution.'
-  os_id=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')
-  [[ "$os_id" == ubuntu ]] || ff_die 'This installer supports Ubuntu only.'
-  case "$(uname -m)" in
-    x86_64|amd64) architecture=amd64 ;;
-    aarch64|arm64) architecture=arm64 ;;
-    *) ff_die 'Supported architectures are amd64 and arm64.' ;;
-  esac
-  for dependency in curl sha256sum stat install mktemp systemctl awk grep; do
+  [[ "$(uname -s)" == Linux ]] || ff_die 'Installation requires Linux and systemd.'
+  [[ -d /run/systemd/system ]] || ff_die 'Installation requires a running systemd system manager.'
+  for dependency in stat install mktemp systemctl awk tar sha256sum; do
     command -v "$dependency" >/dev/null || ff_die "Required command is missing: $dependency"
   done
+  [[ "$FF_SOURCE_REV" =~ ^[0-9a-f]{40}$ ]] || ff_die 'The installer has an invalid source revision.'
   ff_require_ack
-
-  base_url=https://45.76.243.18
-  hub_public_key='Ew1Q+MQs4h4gb1JiiUdY/IQ3i4iLdYtslH5DrsWTduI='
+  if ! command -v git >/dev/null; then
+    printf 'Installing git to retrieve the reviewed source.\n'
+    if command -v apt-get >/dev/null; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates
+    elif command -v dnf >/dev/null; then
+      dnf install -y git ca-certificates
+    elif command -v yum >/dev/null; then
+      yum install -y git ca-certificates
+    elif command -v pacman >/dev/null; then
+      pacman -S --needed --noconfirm git ca-certificates
+    elif command -v zypper >/dev/null; then
+      zypper --non-interactive install git ca-certificates
+    else
+      ff_die "Install git with your system's package manager, then retry."
+    fi
+  fi
+  command -v git >/dev/null || ff_die 'Git installation failed.'
   work_dir=$(mktemp -d /tmp/firefighter-install.XXXXXX)
-  binary_temp=''
-  trap 'rm -rf -- "$work_dir"; [[ -z "$binary_temp" ]] || rm -f -- "$binary_temp"' EXIT
-  download() {
-    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-      --tlsv1.2 --connect-timeout 15 --max-time 180 --max-filesize 104857600 \
-      --retry 2 --output "$work_dir/$1" "$base_url/downloads/$1"
-  }
-  download SHA256SUMS
-  artifacts=("firefighter-linux-$architecture" firefighter-config.json firefighter.env.example firefighter.service)
-  for artifact in "${artifacts[@]}"; do
-    download "$artifact"
-    # Select one named entry; never execute a manifest's arbitrary paths.
-    expected=$(awk -v name="$artifact" '$2 == name { print $1 }' "$work_dir/SHA256SUMS")
-    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || ff_die "Missing, duplicate, or invalid checksum for $artifact. Nothing was installed."
-    actual=$(sha256sum "$work_dir/$artifact")
-    actual=${actual%% *}
-    [[ "$actual" == "$expected" ]] || ff_die "Checksum verification failed for $artifact. Nothing was installed."
-  done
-  # Key changes require updating the bootstrap and template together. Existing
-  # local configuration remains untouched on upgrades.
-  grep -Fq '"url": "https://45.76.243.18"' "$work_dir/firefighter-config.json" || ff_die 'The default feed endpoint does not match this installer.'
-  grep -Fq "\"public_key\": \"$hub_public_key\"" "$work_dir/firefighter-config.json" || ff_die 'The default feed signing key does not match this installer.'
-
-  for target in /etc/firefighter /var/lib/firefighter /usr/local/bin /usr/local/bin/firefighter \
-    /etc/firefighter/config.json /etc/firefighter/firefighter.env /etc/systemd/system/firefighter.service; do
-    [[ ! -L "$target" ]] || ff_die "Refusing symlink installation target: $target"
-  done
-  for target in /etc/firefighter/config.json /etc/firefighter/firefighter.env; do
-    [[ ! -e "$target" || -f "$target" ]] || ff_die "Expected a regular file: $target"
-  done
-  install -d -o 0 -g 0 -m 0700 /etc/firefighter /var/lib/firefighter
-  install -d -o 0 -g 0 -m 0755 /usr/local/bin
-  binary_temp=$(mktemp /usr/local/bin/.firefighter.XXXXXX)
-  install -o 0 -g 0 -m 0755 "$work_dir/firefighter-linux-$architecture" "$binary_temp"
-  mv -T -- "$binary_temp" /usr/local/bin/firefighter
-  binary_temp=''
-  if [[ ! -e /etc/firefighter/config.json ]]; then
-    install -o 0 -g 0 -m 0600 "$work_dir/firefighter-config.json" /etc/firefighter/config.json
-  fi
-  if [[ ! -e /etc/firefighter/firefighter.env ]]; then
-    install -o 0 -g 0 -m 0600 "$work_dir/firefighter.env.example" /etc/firefighter/firefighter.env
-  fi
-  chown 0:0 /etc/firefighter/config.json /etc/firefighter/firefighter.env
-  chmod 0600 /etc/firefighter/config.json /etc/firefighter/firefighter.env
-  install -o 0 -g 0 -m 0644 "$work_dir/firefighter.service" /etc/systemd/system/firefighter.service
-  systemctl daemon-reload
-  ff_record_ack
-  printf '\nInstalled Firefighter for Ubuntu %s. Existing configuration and credentials were preserved.\n' "$architecture"
-  printf '%s\n' \
-    'Set OPENROUTER_API_KEY in /etc/firefighter/firefighter.env and review /etc/firefighter/config.json.' \
-    'To use another LLM provider, change llm.base_url, llm.model, and llm.api_key_env in that config.' \
-    'The shared signed intelligence feed requires no client X/Twitter credential.' \
-    'When configured, start once: sudo systemctl enable --now firefighter' \
-    'This installer did not start or restart the daemon. Restart a configured running upgrade at a safe point.' \
-    'Local audit: /var/lib/firefighter/audit.jsonl. Optional Grokbot reporting is configured separately.'
+  FF_INSTALL_TEMP=''
+  trap 'rm -rf -- "$work_dir"; [[ -z "$FF_INSTALL_TEMP" ]] || rm -f -- "$FF_INSTALL_TEMP"' EXIT
+  source_dir="$work_dir/source"
+  # No moving branch or remote installer script is executed. Git verifies object
+  # hashes; checkout must resolve to the exact revision embedded above.
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0
+  git -c init.defaultBranch=main init --quiet "$source_dir"
+  git -C "$source_dir" remote add origin "$FF_SOURCE_REPOSITORY"
+  git -C "$source_dir" -c http.sslVerify=true -c protocol.file.allow=never fetch --quiet --depth=1 origin "$FF_SOURCE_REV"
+  git -C "$source_dir" -c core.hooksPath=/dev/null checkout --quiet --detach FETCH_HEAD
+  [[ "$(git -C "$source_dir" rev-parse --verify HEAD)" == "$FF_SOURCE_REV" ]] || ff_die 'Fetched source does not match the pinned revision.'
+  source "$source_dir/deploy/install-runtime.sh"
+  ff_install "$source_dir" "$work_dir"
 }
 
-# No installer work happens until the entire function has been received.
+# No installer work happens until this entire function has been received.
 main "$@"

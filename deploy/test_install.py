@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
-"""Hermetic installer fixtures: no root, network, system service, or real install.
+"""Hermetic installer checks: no root, network, or real service mutation.
 
-Production scripts have no test flags. Copies are mapped to a temporary root;
-mock commands reject writes outside that root. Real controlling PTYs exercise
-/dev/tty separately from piped script input, including on macOS development hosts.
+Copies of production entry points are mapped to a temporary filesystem. All
+privileged commands reject paths outside it. Real PTYs exercise /dev/tty while
+bootstrap stdin remains a pipe; no test switches exist in production scripts.
 """
 import errno
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shutil
 import signal
 import subprocess
-import sys
+import tarfile
 import tempfile
 import time
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 PHRASE = 'I understand the risks and that this might delete my entire server.'
+KEY = 'sk-fixture-private-$quoted\\"-key'
 BASH = shutil.which('bash') or '/bin/bash'
 
 MOCK = r'''#!/usr/bin/env python3
-import hashlib,json,os,pathlib,shutil,stat,sys,tempfile
+import hashlib,json,os,pathlib,shutil,stat,sys,tarfile,tempfile
 name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 root=pathlib.Path(os.environ['FF_FIXTURE_ROOT'])
@@ -38,15 +41,37 @@ def target(p):
 if name not in ('id','uname','stat'):
  with (root/'events').open('a') as f:f.write(json.dumps([name,*args])+'\n')
 if name=='id':print('0')
-elif name=='uname':print('Linux' if args==['-s'] else os.environ.get('FF_FIXTURE_ARCH','x86_64'))
+elif name=='uname':print(os.environ.get('FF_FIXTURE_OS','Linux') if args==['-s'] else os.environ.get('FF_FIXTURE_ARCH','x86_64'))
 elif name=='stat':
  p=pathlib.Path(args[-1]);mode=stat.S_IMODE(p.stat().st_mode)
  uid=os.environ.get('FF_FIXTURE_DIRECTORY_UID' if p.is_dir() else 'FF_FIXTURE_MARKER_UID','0')
  print(uid+':'+format(mode,'o'))
+elif name=='git':
+ if 'init' in args:target(args[-1]).mkdir(parents=True)
+ elif 'fetch' in args:
+  assert args[-1]==os.environ['FF_FIXTURE_REV'];sys.exit(int(os.environ.get('FF_FIXTURE_FETCH_FAILURE','0')))
+ elif 'checkout' in args:
+  folder=target(args[args.index('-C')+1]);shutil.copytree(root/'repo',folder,dirs_exist_ok=True)
+ elif 'rev-parse' in args:print(os.environ.get('FF_FIXTURE_CHECKOUT_REV',os.environ['FF_FIXTURE_REV']))
+ elif 'remote' in args:assert args[-1]=='https://github.com/jjcm/firefighter.git'
+ else:raise RuntimeError('Unexpected git command')
+elif name=='go':
+ if args==['env','GOVERSION']:print(os.environ.get('FF_FIXTURE_GO_VERSION','go1.27.2'))
+ elif args[0]=='build':
+  for key in ('GOOS','GOARCH','GOROOT','GOFLAGS','GOEXPERIMENT'):assert key not in os.environ
+  for key,value in [('GOENV','off'),('GOTOOLCHAIN','local'),('GOWORK','off'),('CGO_ENABLED','0')]:assert os.environ[key]==value
+  if os.environ.get('FF_FIXTURE_BUILD_FAILURE'):sys.exit(1)
+  output=target(args[args.index('-o')+1]);output.write_text((root/'doctor-fixture').read_text());output.chmod(0o755)
+ else:raise RuntimeError('Unexpected Go command')
 elif name=='curl':
  assert '--proto' in args and args[args.index('--proto')+1]=='=https'
- url=args[-1];assert url.startswith('https://45.76.243.18/downloads/')
- dest=target(args[args.index('--output')+1]);shutil.copyfile(root/'artifacts'/url.rsplit('/',1)[1],dest)
+ url=args[-1];assert url.startswith('https://go.dev/dl/'), 'Only official toolchains may be downloaded; Firefighter must compile from source'
+ dest=target(args[args.index('--output')+1]);shutil.copyfile(root/('go-releases.json' if url.endswith('?mode=json') else 'go.tar.gz'),dest)
+elif name=='tar':
+ archive=pathlib.Path(args[args.index('-xzf')+1]);dest=target(args[args.index('-C')+1])
+ with tarfile.open(archive) as stream:
+  assert all(item.name=='go/bin/go' and item.isfile() for item in stream.getmembers())
+  stream.extractall(dest)
 elif name=='sha256sum':
  p=pathlib.Path(args[0]);print(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+str(p))
 elif name=='mktemp':
@@ -79,10 +104,22 @@ elif name=='rm':
   if q.is_dir() and not q.is_symlink():shutil.rmtree(q)
   elif q.exists() or q.is_symlink():q.unlink()
 elif name=='systemctl':
- assert args==['daemon-reload'], 'Installer must not start services'
- sys.exit(int(os.environ.get('FF_FIXTURE_RELOAD_FAILURE','0')))
+ assert args in (['daemon-reload'],['enable','firefighter'],['restart','firefighter'],['is-active','--quiet','firefighter'])
+ if args[0]==os.environ.get('FF_FIXTURE_SYSTEMCTL_FAILURE'):sys.exit(1)
 else:raise RuntimeError('Unimplemented fixture command '+name)
 '''
+
+DOCTOR = r'''#!/usr/bin/env python3
+import json,os,pathlib,sys
+assert sys.argv[1]=='doctor'
+config=json.loads(pathlib.Path(sys.argv[sys.argv.index('--config')+1]).read_text())
+llm=config['llm']
+assert llm['backend'] in ('api','anthropic','command')
+if llm['backend']!='command':assert os.environ.get(llm['api_key_env'])==os.environ.get('FF_FIXTURE_EXPECTED_KEY')
+print('Local doctor fixture passed; no API calls.')
+sys.exit(int(os.environ.get('FF_FIXTURE_DOCTOR_FAILURE','0')))
+'''
+
 
 class Fixture:
     def __init__(self):
@@ -91,47 +128,53 @@ class Fixture:
         self.stage = self.root/'stage'
         self.bin = self.root/'mock-bin'
         self.bin.mkdir()
-        for name in ('etc/systemd/system','var/lib','usr/local/bin','tmp'):
+        for name in ('etc/systemd/system','run/systemd/system','var/lib','usr/local/bin','tmp'):
             (self.stage/name).mkdir(parents=True)
-        (self.stage/'etc/os-release').write_text('ID=ubuntu\n')
         self.repo = self.root/'repo'
-        shutil.copytree(REPO/'deploy',self.repo/'deploy')
+        shutil.copytree(REPO/'deploy',self.repo/'deploy',ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copytree(REPO/'plugins/grokbot',self.repo/'plugins/grokbot')
-        (self.repo/'bin').mkdir()
-        for name in ('firefighter','firefighter-grokbot'):
-            p=self.repo/'bin'/name;p.write_text('#!/bin/sh\nexit 0\n');p.chmod(0o755)
+        shutil.copyfile(REPO/'go.mod',self.repo/'go.mod')
+        self.revision = re.search(r'^FF_SOURCE_REV=([0-9a-f]{40})$',(REPO/'deploy/bootstrap.sh').read_text(),re.M).group(1)
         dispatcher=self.bin/'mock';dispatcher.write_text(MOCK);dispatcher.chmod(0o755)
-        for command in ('id','uname','stat','curl','sha256sum','mktemp','install','chmod','chown','mv','rm','systemctl'):
+        for command in ('id','uname','stat','git','go','curl','tar','sha256sum','mktemp','install','chmod','chown','mv','rm','systemctl'):
             (self.bin/command).symlink_to(dispatcher)
-        self.env=dict(os.environ,FF_FIXTURE_ROOT=str(self.root),PATH=str(self.bin)+os.pathsep+os.environ['PATH'])
-        for name in ('bootstrap.sh','install.sh','install-ack.sh'):
+        (self.root/'doctor-fixture').write_text(DOCTOR)
+        self.env=dict(os.environ,FF_FIXTURE_ROOT=str(self.root),FF_FIXTURE_REV=self.revision,FF_FIXTURE_EXPECTED_KEY=KEY,PATH=str(self.bin)+os.pathsep+os.environ['PATH'])
+        # Production has no path override. Only copied test scripts are mapped.
+        for name in ('bootstrap.sh','install.sh','install-ack.sh','install-runtime.sh'):
             p=self.repo/'deploy'/name
-            text=p.read_text().replace('PATH=/usr/sbin:/usr/bin:/sbin:/bin','PATH='+str(self.bin)+':'+os.environ['PATH'])
-            for before,after in (('/etc/',str(self.stage/'etc')+'/'),('/var/lib/',str(self.stage/'var/lib')+'/'),('/usr/local/bin',str(self.stage/'usr/local/bin')),('/tmp/firefighter-install.',str(self.stage/'tmp/firefighter-install.'))):
+            text=p.read_text().replace('PATH=/usr/local/go/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','PATH='+str(self.bin)+':'+os.environ['PATH'])
+            for before,after in (('/etc/',str(self.stage/'etc')+'/'),('/run/systemd/system',str(self.stage/'run/systemd/system')),('/var/lib/',str(self.stage/'var/lib')+'/'),('/usr/local/bin',str(self.stage/'usr/local/bin')),('/tmp/firefighter-install.',str(self.stage/'tmp/firefighter-install.'))):
                 text=text.replace(before,after)
             p.write_text(text)
-        self.artifacts=self.root/'artifacts';self.artifacts.mkdir()
-        for arch in ('amd64','arm64'):(self.artifacts/('firefighter-linux-'+arch)).write_bytes(('fixture-'+arch).encode())
-        for source,dest in [('firefighter-config.json','firefighter-config.json'),('firefighter-bootstrap.env.example','firefighter.env.example'),('firefighter.service','firefighter.service')]:
-            shutil.copyfile(REPO/'deploy'/source,self.artifacts/dest)
-        self.manifest()
+        with tarfile.open(self.root/'go.tar.gz','w:gz') as archive:
+            content=MOCK.encode();info=tarfile.TarInfo('go/bin/go');info.size=len(content);info.mode=0o755
+            archive.addfile(info,io.BytesIO(content))
+        checksum=hashlib.sha256((self.root/'go.tar.gz').read_bytes()).hexdigest()
+        release=[{'version':'go1.27.2','stable':True,'files':[{'os':'linux','arch':'amd64','kind':'archive','filename':'go1.27.2.linux-amd64.tar.gz','sha256':checksum}]}]
+        (self.root/'go-releases.json').write_text(json.dumps(release))
     def close(self):self.temp.cleanup()
-    def manifest(self):
-        files=sorted(p for p in self.artifacts.iterdir() if p.name!='SHA256SUMS')
-        (self.artifacts/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in files))
     def acknowledgment(self,mode=0o600):
         p=self.stage/'etc/firefighter';p.mkdir(mode=0o700,exist_ok=True)
         marker=p/'install-risk-acknowledgment';marker.write_text(PHRASE+'\n');marker.chmod(mode)
         return marker
+    def configured(self):
+        self.acknowledgment()
+        folder=self.stage/'etc/firefighter'
+        config=json.loads((REPO/'deploy/firefighter-config.json').read_text());config['instructions']='Operator custom instructions preserved'
+        text=json.dumps(config,indent=4)+'\n';env='OPENROUTER_API_KEY="fixture-preserved-key"\n# Preserve this comment\n'
+        (folder/'config.json').write_text(text);(folder/'firefighter.env').write_text(env)
+        self.env['FF_FIXTURE_EXPECTED_KEY']='fixture-preserved-key'
+        return text,env
     def events(self):
         p=self.root/'events';return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
-    def run(self,kind='bootstrap',answer=None,script=None):
+    def run(self,kind='bootstrap',answer=None,provider='',model='',key=KEY,script=None,terminal=False):
         file=self.repo/'deploy'/('bootstrap.sh' if kind=='bootstrap' else 'install.sh')
         code=script if script is not None else file.read_text()
         args=[BASH] if kind=='bootstrap' else [BASH,str(file)]
         data=code.encode() if kind=='bootstrap' else b''
-        if answer is None:
-            r=subprocess.run(args,input=data,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,env=self.env,start_new_session=True,timeout=15)
+        if answer is None and not terminal:
+            r=subprocess.run(args,input=data,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,env=self.env,start_new_session=True,timeout=20)
             return r.returncode,r.stdout.decode(errors='replace')
         reader,writer=os.pipe()
         pid,master=pty.fork()
@@ -142,7 +185,10 @@ class Fixture:
             offset=0
             while offset<len(data):offset+=os.write(writer,data[offset:])
         finally:os.close(writer)
-        output=bytearray();sent=False;deadline=time.monotonic()+15;status=None
+        prompts=[]
+        if answer is not None:prompts.append((b'\n> ',answer))
+        prompts.extend([(b'Provider [1]: ',provider),(b']: ',model),(b'API key (hidden): ',key)])
+        output=bytearray();pending=bytearray();deadline=time.monotonic()+20;status=None
         try:
             while time.monotonic()<deadline:
                 ready,_,_=select.select([master],[],[],0.05)
@@ -151,9 +197,11 @@ class Fixture:
                     except OSError as exc:
                         if exc.errno!=errno.EIO:raise
                         chunk=b''
-                    output.extend(chunk)
-                    if b'\n> ' in output and not sent:
-                        os.write(master,(answer+'\n').encode());sent=True
+                    output.extend(chunk);pending.extend(chunk)
+                    if prompts and prompts[0][0] in pending:
+                        marker,value=prompts.pop(0)
+                        pending=bytearray(pending.split(marker,1)[1])
+                        os.write(master,(value+'\n').encode())
                 done,status_now=os.waitpid(pid,os.WNOHANG)
                 if done:status=status_now;break
             if status is None:
@@ -162,12 +210,16 @@ class Fixture:
         finally:os.close(master)
         return os.waitstatus_to_exitcode(status),output.decode(errors='replace')
 
+
 class InstallTests(unittest.TestCase):
     def setUp(self):self.f=Fixture()
     def tearDown(self):self.f.close()
     def assert_untouched(self):
         self.assertEqual([],self.f.events())
         self.assertFalse((self.f.stage/'usr/local/bin/firefighter').exists())
+    def assert_not_started(self):
+        self.assertFalse(any(e[0]=='systemctl' for e in self.f.events()))
+        self.assertFalse((self.f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
     def test_acknowledgment_blocks_are_identical(self):
         def block(p):
             t=p.read_text();a=t.index('# BEGIN FIREFIGHTER INSTALL ACK');b=t.index('# END FIREFIGHTER INSTALL ACK')
@@ -181,45 +233,85 @@ class InstallTests(unittest.TestCase):
         for kind in ('bootstrap','repo'):
             with self.subTest(kind=kind):
                 code,out=self.f.run(kind,answer=PHRASE+' ');self.assertNotEqual(code,0);self.assertIn('did not match exactly',out);self.assert_untouched()
-    def test_piped_script_reads_exact_acknowledgment_from_tty(self):
+    def test_interactive_source_install_starts_service_and_hides_key(self):
         code,out=self.f.run(answer=PHRASE);self.assertEqual(code,0,out)
-        marker=self.f.stage/'etc/firefighter/install-risk-acknowledgment'
+        folder=self.f.stage/'etc/firefighter';marker=folder/'install-risk-acknowledgment'
         self.assertEqual(marker.read_text(),PHRASE+'\n');self.assertEqual(marker.stat().st_mode&0o777,0o600)
-        self.assertEqual((self.f.stage/'usr/local/bin/firefighter').read_bytes(),b'fixture-amd64')
-        self.assertEqual([e for e in self.f.events() if e[0]=='systemctl'],[['systemctl','daemon-reload']])
-        self.assertEqual((self.f.stage/'etc/firefighter/firefighter.env').stat().st_mode&0o777,0o600)
-    def test_repository_installer_exact_acknowledgment(self):
+        self.assertEqual([e for e in self.f.events() if e[0]=='systemctl'],[['systemctl','daemon-reload'],['systemctl','enable','firefighter'],['systemctl','restart','firefighter'],['systemctl','is-active','--quiet','firefighter']])
+        self.assertEqual((folder/'firefighter.env').stat().st_mode&0o777,0o600)
+        self.assertNotIn(KEY,out);self.assertNotIn(KEY,json.dumps(self.f.events()))
+        config=json.loads((folder/'config.json').read_text())
+        self.assertEqual(config['llm']['api_key_env'],'OPENROUTER_API_KEY')
+        self.assertEqual(config['llm']['model'],'deepseek/deepseek-v4.1-flash-1017')
+        self.assertTrue(any(e[0]=='git' and 'fetch' in e and e[-1]==self.f.revision for e in self.f.events()))
+        self.assertEqual(len([e for e in self.f.events() if e[:2]==['go','build']]),2)
+        self.assertFalse(any(e[0]=='curl' for e in self.f.events()))
+    def test_openai_provider_and_model_override(self):
+        code,out=self.f.run(answer=PHRASE,provider='2',model='gpt-custom-model');self.assertEqual(code,0,out)
+        llm=json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['llm']
+        self.assertEqual((llm['backend'],llm['base_url'],llm['api_key_env'],llm['model'],llm['json_mode']),('api','https://api.openai.com/v1','OPENAI_API_KEY','gpt-custom-model',False))
+        self.assertNotIn(KEY,out)
+    def test_anthropic_provider_uses_native_backend(self):
+        code,out=self.f.run(answer=PHRASE,provider='3');self.assertEqual(code,0,out)
+        llm=json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['llm']
+        self.assertEqual((llm['backend'],llm['base_url'],llm['api_key_env'],llm['model'],llm['json_mode']),('anthropic','https://api.anthropic.com/v1','ANTHROPIC_API_KEY','claude-sonnet-5-5',False))
+        self.assertNotIn(KEY,out)
+    def test_repository_installer_builds_and_starts(self):
         code,out=self.f.run('repo',answer=PHRASE);self.assertEqual(code,0,out)
         self.assertTrue((self.f.stage/'usr/local/bin/firefighter-grokbot').exists())
         self.assertTrue((self.f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
     def test_upgrade_without_tty_preserves_local_configuration(self):
-        self.f.acknowledgment()
-        folder=self.f.stage/'etc/firefighter'
-        (folder/'config.json').write_text('{"custom":"preserved"}\n');(folder/'firefighter.env').write_text('CUSTOM_KEY=fixture-only\n')
+        original_config,original_env=self.f.configured();folder=self.f.stage/'etc/firefighter'
         for kind in ('bootstrap','repo'):
             with self.subTest(kind=kind):
                 code,out=self.f.run(kind);self.assertEqual(code,0,out)
-                self.assertEqual((folder/'config.json').read_text(),'{"custom":"preserved"}\n')
-                self.assertEqual((folder/'firefighter.env').read_text(),'CUSTOM_KEY=fixture-only\n')
-    def test_checksum_failure_installs_nothing_and_does_not_record_ack(self):
-        (self.f.artifacts/'firefighter.service').write_text('tampered after manifest\n')
-        code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0);self.assertIn('Checksum verification failed',out)
-        self.assertFalse((self.f.stage/'etc/firefighter').exists())
-        self.assertFalse(any(e[0] in ('install','systemctl') for e in self.f.events()))
-    def test_duplicate_manifest_entry_is_rejected(self):
-        p=self.f.artifacts/'SHA256SUMS';p.write_text(p.read_text()+next(x for x in p.read_text().splitlines() if x.endswith('firefighter-linux-amd64'))+'\n')
-        code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0);self.assertIn('invalid checksum',out)
-        self.assertFalse((self.f.stage/'etc/firefighter').exists())
-    def test_architecture_arm64(self):
-        self.f.acknowledgment();self.f.env['FF_FIXTURE_ARCH']='aarch64'
-        code,out=self.f.run();self.assertEqual(code,0,out)
-        self.assertEqual((self.f.stage/'usr/local/bin/firefighter').read_bytes(),b'fixture-arm64')
-    def test_unsupported_architecture_fails_before_ack_or_mutation(self):
-        self.f.env['FF_FIXTURE_ARCH']='riscv64'
-        code,out=self.f.run();self.assertNotEqual(code,0);self.assertIn('architectures',out);self.assert_untouched()
-    def test_non_ubuntu_fails_before_ack_or_mutation(self):
-        (self.f.stage/'etc/os-release').write_text('ID=debian\n')
-        code,out=self.f.run();self.assertNotEqual(code,0);self.assertIn('Ubuntu only',out);self.assert_untouched()
+                self.assertEqual((folder/'config.json').read_text(),original_config)
+                self.assertEqual((folder/'firefighter.env').read_text(),original_env)
+                self.assertNotIn('API key (hidden)',out)
+    def test_existing_blank_configuration_gets_interactive_provider_setup(self):
+        self.f.acknowledgment();folder=self.f.stage/'etc/firefighter'
+        shutil.copyfile(REPO/'deploy/firefighter-config.json',folder/'config.json')
+        (folder/'firefighter.env').write_text('OPENROUTER_API_KEY=\nKEEP_ME=value\n')
+        code,out=self.f.run(terminal=True);self.assertEqual(code,0,out)
+        self.assertIn('KEEP_ME=value',(folder/'firefighter.env').read_text())
+    def test_build_failure_leaves_existing_installation_untouched(self):
+        original_config,original_env=self.f.configured();self.f.env['FF_FIXTURE_BUILD_FAILURE']='1'
+        binary=self.f.stage/'usr/local/bin/firefighter';binary.write_text('existing binary')
+        code,out=self.f.run();self.assertNotEqual(code,0)
+        self.assertEqual(binary.read_text(),'existing binary')
+        self.assertEqual((self.f.stage/'etc/firefighter/config.json').read_text(),original_config)
+        self.assertEqual((self.f.stage/'etc/firefighter/firefighter.env').read_text(),original_env)
+        self.assertFalse(any(e[0]=='systemctl' for e in self.f.events()))
+    def test_doctor_failure_never_installs_or_starts(self):
+        self.f.env['FF_FIXTURE_DOCTOR_FAILURE']='1'
+        code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0)
+        self.assert_not_started();self.assertFalse((self.f.stage/'usr/local/bin/firefighter').exists())
+    def test_fetch_failure_does_not_compile_or_start(self):
+        self.f.env['FF_FIXTURE_FETCH_FAILURE']='1'
+        code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0);self.assert_not_started()
+        self.assertFalse(any(e[0]=='go' for e in self.f.events()))
+    def test_wrong_source_revision_is_rejected(self):
+        self.f.env['FF_FIXTURE_CHECKOUT_REV']='0'*40
+        code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0);self.assertIn('pinned revision',out);self.assert_not_started()
+    def test_non_ubuntu_and_alternative_architectures_use_local_compiler(self):
+        self.f.env['FF_FIXTURE_ARCH']='riscv64';self.f.env['GOARCH']='amd64';self.f.env['GOOS']='darwin'
+        code,out=self.f.run(answer=PHRASE);self.assertEqual(code,0,out)
+        self.assertFalse(any(e[0]=='curl' for e in self.f.events()))
+    def test_missing_systemd_fails_before_ack_or_mutation(self):
+        (self.f.stage/'run/systemd/system').rmdir()
+        code,out=self.f.run();self.assertNotEqual(code,0);self.assertIn('systemd',out);self.assert_untouched()
+    def test_non_linux_fails_before_ack_or_mutation(self):
+        self.f.env['FF_FIXTURE_OS']='Darwin'
+        code,out=self.f.run();self.assertNotEqual(code,0);self.assertIn('Linux',out);self.assert_untouched()
+    def test_old_go_downloads_checksum_verified_official_toolchain(self):
+        self.f.env['FF_FIXTURE_GO_VERSION']='go1.18.1'
+        code,out=self.f.run(answer=PHRASE);self.assertEqual(code,0,out)
+        downloads=[e[-1] for e in self.f.events() if e[0]=='curl']
+        self.assertEqual(downloads,['https://go.dev/dl/?mode=json','https://go.dev/dl/go1.27.2.linux-amd64.tar.gz'])
+    def test_corrupt_toolchain_never_compiles_or_starts(self):
+        self.f.env['FF_FIXTURE_GO_VERSION']='go1.18.1';(self.f.root/'go.tar.gz').write_text('corrupt archive')
+        code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0);self.assertIn('checksum verification failed',out);self.assert_not_started()
+        self.assertFalse(any(e[:2]==['go','build'] for e in self.f.events()))
     def test_insecure_marker_and_parent_are_rejected(self):
         marker=self.f.acknowledgment(mode=0o644)
         code,out=self.f.run();self.assertNotEqual(code,0);self.assertIn('0600',out);self.assert_untouched()
@@ -232,8 +324,8 @@ class InstallTests(unittest.TestCase):
     def test_symlink_marker_is_rejected(self):
         marker=self.f.acknowledgment();saved=marker.with_name('saved');marker.rename(saved);marker.symlink_to(saved)
         code,out=self.f.run();self.assertNotEqual(code,0);self.assertIn('symlink',out);self.assert_untouched()
-    def test_acknowledgment_not_persisted_when_reload_fails(self):
-        self.f.env['FF_FIXTURE_RELOAD_FAILURE']='1'
+    def test_acknowledgment_not_persisted_when_service_start_fails(self):
+        self.f.env['FF_FIXTURE_SYSTEMCTL_FAILURE']='restart'
         code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0)
         self.assertFalse((self.f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
     def test_truncated_pipe_never_begins_installation(self):
