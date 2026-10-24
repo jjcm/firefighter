@@ -46,9 +46,10 @@ func NewRunner(config Config) *Runner {
 }
 
 // Validate checks action syntax without executing it. Executables must be
-// absolute paths or simple names resolved using TrustedPath; relative paths and
-// relative working directories are rejected. Shell syntax is interpreted only
-// when an action explicitly invokes a shell, for example /bin/sh -c.
+// absolute paths or simple names resolved using TrustedPath, without whitespace
+// or control characters. Relative paths and relative working directories are
+// rejected. Shell syntax is interpreted only when an action explicitly invokes
+// a shell, for example /bin/sh -c.
 func Validate(action protocol.Action) error {
 	if action.Kind != "command" {
 		return fmt.Errorf("unsupported action kind %q", action.Kind)
@@ -56,16 +57,16 @@ func Validate(action protocol.Action) error {
 	if strings.TrimSpace(action.ID) == "" || strings.ContainsRune(action.ID, '\x00') {
 		return errors.New("action id must be nonempty and contain no NUL bytes")
 	}
-	if len(action.Argv) == 0 || action.Argv[0] == "" {
+	if len(action.Argv) == 0 {
 		return errors.New("command argv must include an executable")
+	}
+	if err := protocol.ValidateExecutable(action.Argv[0]); err != nil {
+		return err
 	}
 	for _, arg := range action.Argv {
 		if strings.ContainsRune(arg, '\x00') {
 			return errors.New("command arguments must not contain NUL bytes")
 		}
-	}
-	if !filepath.IsAbs(action.Argv[0]) && strings.ContainsAny(action.Argv[0], `/\\`) {
-		return errors.New("executable must be an absolute path or a simple name from the trusted PATH")
 	}
 	if action.Dir != "" && (!filepath.IsAbs(action.Dir) || strings.ContainsRune(action.Dir, '\x00')) {
 		return errors.New("working directory must be an absolute path without NUL bytes")

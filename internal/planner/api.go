@@ -236,7 +236,7 @@ func decisionSchema() map[string]any {
 		"verify": map[string]any{"type": "array", "items": str, "description": "A separate read-only assertion of a mutating action's fix and service health. Use [] for ordinary read-only observations; their output is evaluated next turn. Do not repeat the observation command here."},
 	}}
 	memoryUpdate := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "key", "text", "evidence", "tags", "ttl_hours"}, "properties": map[string]any{
-		"operation": map[string]any{"type": "string", "enum": []string{"upsert", "delete"}}, "key": str, "text": str, "evidence": strs, "tags": strs, "ttl_hours": map[string]any{"type": "integer"},
+		"operation": map[string]any{"type": "string", "enum": []string{"upsert", "delete"}}, "key": str, "text": str, "evidence": map[string]any{"type": "array", "items": str, "description": "At most 8 evidence strings, each at most 500 bytes."}, "tags": map[string]any{"type": "array", "items": str, "description": "At most 8 tags, each at most 64 bytes."}, "ttl_hours": map[string]any{"type": "integer"},
 	}}
 	applicability := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"status", "product", "condition", "evidence"}, "properties": map[string]any{
 		"status":    map[string]any{"type": "string", "enum": []string{"unknown", "affected", "not_affected"}},

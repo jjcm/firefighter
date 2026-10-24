@@ -30,6 +30,9 @@ func TestValidateRejectsMalformedActions(t *testing.T) {
 		{"missing id", protocol.Action{Kind: "command", Argv: []string{"true"}}},
 		{"missing executable", command()},
 		{"empty executable", command("")},
+		{"command line as executable", command("/usr/sbin/ufw delete limit 22/tcp && /usr/sbin/ufw allow 22/tcp")},
+		{"executable path with spaces", command("/opt/local tools/check")},
+		{"tab in executable", command("/bin/true\tignored")},
 		{"relative executable", command("./tool")},
 		{"relative path", command("bin/tool")},
 		{"NUL executable", command("/bin/tr\x00ue")},
@@ -109,6 +112,28 @@ func TestRunnerHonorsCWDAndArgvWithoutImplicitShell(t *testing.T) {
 	result := NewRunner(Config{}).Run(context.Background(), action)
 	if result.Error != "" || result.ExitCode != 0 || result.Output != resolvedDir+"\nhello; exit 19\n" {
 		t.Fatalf("unexpected command handling: %+v", result)
+	}
+}
+
+func TestRunnerRejectsCommandLineBeforeAttemptingExecution(t *testing.T) {
+	result := NewRunner(Config{}).Run(context.Background(), command("/bin/true && /bin/false"))
+	if !result.Skipped || result.ExitCode != -1 || !strings.Contains(result.Error, "single token") || strings.Contains(result.Error, "start command") {
+		t.Fatalf("malformed executable reached process startup: %+v", result)
+	}
+}
+
+func TestRunnerExplicitShellSupportsExecutablePathWithSpaces(t *testing.T) {
+	// The token restriction applies only to argv[0]. An explicit shell can
+	// execute a real path with spaces passed separately, without interpolation.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "check with spaces")
+	if err := os.Symlink("/bin/echo", path); err != nil {
+		t.Fatal(err)
+	}
+	argument := "literal text; $(do-not-execute) && untouched\nnext line"
+	result := NewRunner(Config{}).Run(context.Background(), command("/bin/sh", "-c", `exec "$1" "$2"`, "firefighter", path, argument))
+	if result.Error != "" || result.ExitCode != 0 || result.Output != argument+"\n" {
+		t.Fatalf("explicit shell or literal arguments changed: %+v", result)
 	}
 }
 
