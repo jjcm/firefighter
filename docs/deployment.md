@@ -21,6 +21,7 @@ command output, credentials, or private incident records to the hub.
 | TLS termination | nginx, ports 80 and 443; public links use IPv4 |
 | IP certificate | Certbot short-lived profile, lineage `firefighter-ip` |
 | Certificate files | `/etc/letsencrypt/live/firefighter-ip/fullchain.pem` and `privkey.pem` |
+| Domain origin certificate | Let's Encrypt lineage `firefighter-domain`, expires January 22, 2027; Cloudflare edge certificate pending |
 | Hub listener | `127.0.0.1:8090`, accessible through nginx |
 | Hub service account | `firefighter-hub`, without root remediation privileges |
 | Hub executable | `/usr/local/bin/firefighter-hub` |
@@ -176,29 +177,30 @@ can instead distribute a CA bundle and configure the client's absolute `ca_file`
 path. Hostname/IP matching remains enabled, and the Ed25519 publisher pin remains
 required independently of TLS.
 
-### Domain certificate (pending DNS)
+### Domain certificate (origin active; edge pending)
 
-`firefighter.sh` is the intended domain, but its certificate is not issued yet.
-Cloudflare shows the registrar status as Active, with nameservers
-`aria.ns.cloudflare.com` and `ridge.ns.cloudflare.com`. The apex A record points
-to `45.76.243.18` with proxying enabled, and SSL/TLS mode is Full (Strict).
-Direct queries to those Cloudflare nameservers return edge addresses
-`172.67.163.131` and `104.21.49.139`, as expected for a proxied record. Public DNS
-should resolve to Cloudflare's edge addresses, which may change, rather than the
-origin IP.
+DNS delegation and public resolution were working by 14:03 UTC (21:03 Bangkok
+time) on October 24, 2026. Cloudflare's nameservers are `aria.ns.cloudflare.com`
+and `ridge.ns.cloudflare.com`; the apex A record points to `45.76.243.18` with
+proxying enabled and SSL/TLS mode Full (Strict). Public DNS returns Cloudflare
+edge addresses rather than the origin IP.
 
-At approximately 13:58 UTC (20:58 Bangkok time) on October 24, 2026, direct queries
-from both the Mac and hub to authoritative `.sh` nameservers still returned
-`NXDOMAIN`. The remaining blocker is registry publication of the delegation,
-despite the active registration and configured Cloudflare zone. The existing IP
-URL and its `firefighter-ip` certificate remain in service.
+The origin now has a Let's Encrypt certificate in lineage `firefighter-domain`,
+expiring January 22, 2027, and the [domain nginx configuration](../deploy/nginx-domain.conf)
+is active. Direct requests using `--resolve firefighter.sh:443:45.76.243.18`
+pass normal certificate verification, and curl at the root returns the same
+bytes as the public bootstrap.
 
-The hub's HTTP domain route for `/.well-known/acme-challenge/` has been prepared
-and verified against `/var/lib/letsencrypt`. Once the delegation is published and
-public DNS resolves the domain, verify that this challenge path is reachable
-through Cloudflare on port 80. Local hosts-file entries do not satisfy the
-certificate authority's DNS checks. Use the existing ACME account to issue a
-separate domain certificate:
+Public domain HTTPS still fails at Cloudflare's edge. Its managed Universal SSL
+certificate for `firefighter.sh` and `*.firefighter.sh` shows **Pending Validation
+(TXT)**; Cloudflare says it handles validation without operator action. The
+remaining blocker is this edge certificate, not DNS delegation or the origin
+certificate. Use the working IP URL while activation is pending. The original
+IP vhost and `firefighter-ip` certificate remain enabled.
+
+For reprovisioning, the origin's HTTP challenge route serves
+`/.well-known/acme-challenge/` from `/var/lib/letsencrypt`. Verify public reachability
+on port 80, then use the existing ACME account to issue the domain certificate:
 
 ```sh
 sudo certbot certonly --non-interactive --webroot -w /var/lib/letsencrypt \
@@ -206,22 +208,21 @@ sudo certbot certonly --non-interactive --webroot -w /var/lib/letsencrypt \
   --deploy-hook 'nginx -t && systemctl reload nginx'
 ```
 
-The final [domain nginx configuration](../deploy/nginx-domain.conf) is prepared
-locally. Only after `/etc/letsencrypt/live/firefighter-domain/fullchain.pem` and
-`privkey.pem` exist, install and enable it:
+On a new origin, install and enable the domain configuration only after
+`/etc/letsencrypt/live/firefighter-domain/fullchain.pem` and `privkey.pem` exist:
 
 ```sh
 sudo install -m 0644 deploy/nginx-domain.conf /etc/nginx/sites-available/firefighter-domain
 sudo ln -s /etc/nginx/sites-available/firefighter-domain /etc/nginx/sites-enabled/firefighter-domain
 sudo nginx -t
 sudo systemctl reload nginx
-sudo certbot renew --cert-name firefighter-domain --dry-run
+sudo certbot renew --cert-name firefighter-domain --dry-run --no-random-sleep-on-renew
 ```
 
 Skip the symlink command if it already exists. Keep the original IP vhost and
-certificate lineage enabled so existing clients continue to work. The existing
-`certbot.timer` will renew both certificates; the domain deploy hook validates and
-reloads nginx after successful renewal. A dry run does not run deploy hooks unless
+certificate lineage enabled so existing clients continue to work. Keep
+`certbot.timer` enabled for both lineages; the domain deploy hook validates and
+reloads nginx after successful renewal. The domain renewal dry run passed on October 24, 2026. A dry run does not run deploy hooks unless
 `--run-deploy-hooks` is also supplied. No hub restart or client configuration change
 is required. See the [Certbot renewal documentation](https://eff-certbot.readthedocs.io/en/stable/using.html#renewing-certificates).
 
@@ -279,8 +280,9 @@ the domain quickstart is:
 curl -fsSL https://firefighter.sh | sudo bash
 ```
 
-The domain is still pending registry DNS publication and certificate issuance.
-Until it is ready, use `curl -fsSL https://45.76.243.18 | sudo bash`.
+The origin certificate is active, but Cloudflare's edge certificate is still
+pending validation. Until public domain HTTPS works, use
+`curl -fsSL https://45.76.243.18 | sudo bash`.
 `/install.sh` remains the explicit fallback when using a different User-Agent;
 opening `/` in a browser shows the website.
 

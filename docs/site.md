@@ -24,7 +24,7 @@ The public quickstart targets the domain:
 curl -fsSL https://firefighter.sh | sudo bash
 ```
 
-The domain is pending registry DNS publication and certificate issuance. Until it is ready, use `curl -fsSL https://45.76.243.18 | sudo bash`. `/install.sh` remains the explicit installer path for clients that do not send curl's User-Agent.
+DNS and the origin certificate are active, but Cloudflare's managed edge certificate is still pending validation and public domain HTTPS is not ready. Until it is, use `curl -fsSL https://45.76.243.18 | sudo bash`. `/install.sh` remains the explicit installer path for clients that do not send curl's User-Agent.
 
 The landing page gives the experimental-use warning and a link to the FAQ. The exact first-install risk acknowledgment appears in the interactive installer, not as a second step on the page. The prompt reads `/dev/tty`, so piped script input cannot answer it. No terminal or a mismatched sentence aborts before writes. After successful startup, the acknowledgment is stored in root-owned mode `0600` at `/etc/firefighter/install-risk-acknowledgment`; a valid record skips it on upgrades. Runtime operation still has no approval prompts.
 

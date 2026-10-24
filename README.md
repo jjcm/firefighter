@@ -26,8 +26,10 @@ For example, a WordPress notice with adequate local evidence that WordPress is a
 From an interactive terminal on a Linux server running systemd:
 
 ```sh
-curl -fsSL https://45.76.243.18/install.sh | sudo bash
+curl -fsSL https://firefighter.sh | sudo bash
 ```
+
+The root URL serves the installer to curl and the website to browsers. `/install.sh` remains available for clients with a custom User-Agent.
 
 The installer asks you to acknowledge the risk of deleting the server, choose a provider and model, and paste an API key with terminal echo disabled. It builds Firefighter locally from a pinned commit in the [public GitHub repository](https://github.com/jjcm/firefighter). The final interactive step connects your messaging channel and sends a test before the root service starts automatically. The service also starts at boot. **After installation, there are no runtime approval prompts.** Read the [FAQ](https://45.76.243.18/faq) before running it.
 
