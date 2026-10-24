@@ -82,7 +82,7 @@ ff_atomic_install() {
 }
 
 ff_install() {
-  local source_dir=$1 work_dir=$2 target binary revision channel
+  local source_dir=$1 work_dir=$2 target binary revision enable_output
   ff_dependencies curl python3
   for target in /etc/firefighter /var/lib/firefighter /usr/local/bin /etc/firefighter-grokbot \
     /usr/local/bin/firefighter /usr/local/bin/firefighter-grokbot \
@@ -119,7 +119,6 @@ ff_install() {
     "$work_dir/firefighter" "$work_dir/config.json" "$work_dir/firefighter.env" /etc/firefighter/config.json
   # Validate with credentials in a child environment, never shell-source secrets.
   python3 "$source_dir/deploy/install-config.py" doctor "$work_dir/firefighter" "$work_dir/config.json" "$work_dir/firefighter.env"
-  channel=$(python3 "$source_dir/deploy/install-config.py" report-label "$work_dir/config.json")
 
   install -d -o 0 -g 0 -m 0700 /etc/firefighter /var/lib/firefighter
   install -d -o 0 -g 0 -m 0755 /usr/local/bin /etc/firefighter-grokbot
@@ -137,11 +136,13 @@ ff_install() {
   install -o 0 -g 0 -m 0644 "$source_dir/deploy/firefighter.service" /etc/systemd/system/firefighter.service
   install -o 0 -g 0 -m 0644 "$source_dir/plugins/grokbot/firefighter-grokbot.service" /etc/systemd/system/firefighter-grokbot.service
   systemctl daemon-reload
-  systemctl enable firefighter
+  if ! enable_output=$(systemctl enable firefighter 2>&1); then
+    printf '%s\n' "$enable_output" >&2
+    ff_die 'Could not enable Firefighter at boot.'
+  fi
   systemctl restart firefighter
   systemctl is-active --quiet firefighter || ff_die 'Firefighter did not stay active. Inspect journalctl -u firefighter before retrying.'
   ff_record_ack
-  printf '\nReporting: %s.\n' "$channel"
   printf 'Firefighter started as root, autonomous and enabled at boot. Audit: /var/lib/firefighter/audit.jsonl\n'
   printf 'Follow activity: journalctl -u firefighter -f\n'
 }

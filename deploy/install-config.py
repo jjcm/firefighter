@@ -18,8 +18,6 @@ PROVIDERS = {
     '3': ('Anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'ANTHROPIC_API_KEY', 'claude-sonnet-5-5', False),
 }
 
-REPORT_NAMES = {'discord': 'Discord', 'telegram': 'Telegram', 'slack': 'Slack',
-                'grokbot': 'Grok Bot', 'webhook': 'Webhook', 'none': 'Local only'}
 REPORT_CHOICES = {'1': 'discord', '2': 'telegram', '3': 'slack', '4': 'grokbot', '5': 'none'}
 NOTIFY_URL = 'FIREFIGHTER_NOTIFY_URL'
 NOTIFY_TOKEN = 'FIREFIGHTER_NOTIFY_TOKEN'
@@ -331,7 +329,7 @@ def configure_report(args):
                 except subprocess.TimeoutExpired:
                     accepted = False
                 if accepted:
-                    terminal.write('Test accepted. Check your chat; acceptance does not prove delivery to a person.\n')
+                    terminal.write('Test message sent. Check your chat.\n')
                     return
                 terminal.write('The test failed. Check the destination, permissions, and network connection.\n'
                                '  1) Retry test (default)\n  2) Reconfigure channel\n'
@@ -354,27 +352,20 @@ def configure_report(args):
                 die('Installation canceled. Existing configuration was not changed.')
 
 
-def report_label(config_path):
-    report = json.loads(Path(config_path).read_text()).get('report') or {}
-    kind = report.get('type', '')
-    if not kind:
-        kind = 'webhook' if report.get('url') or report.get('url_env') else 'none'
-    print(REPORT_NAMES.get(kind, 'Configured channel'))
-
-
 def main():
     command, *args = sys.argv[1:]
     if command == 'configure':
         configure(args)
     elif command == 'configure-report':
         configure_report(args)
-    elif command == 'report-label':
-        report_label(*args)
     elif command == 'doctor':
         binary, config, environment = args
         child_env = dict(os.environ)
         child_env.update(parse_env(Path(environment).read_text()))
-        result = subprocess.run([binary, 'doctor', '--config', config], env=child_env)
+        result = subprocess.run([binary, 'doctor', '--config', config], env=child_env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode:
+            sys.stderr.buffer.write(result.stdout)
         raise SystemExit(result.returncode)
     elif command == 'go-version':
         raise SystemExit(0 if version(args[0]) >= version(args[1]) and version(args[0]) != (0, 0, 0) else 1)

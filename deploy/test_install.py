@@ -123,7 +123,9 @@ elif name=='rm':
   elif q.exists() or q.is_symlink():q.unlink()
 elif name=='systemctl':
  assert args in (['daemon-reload'],['enable','firefighter'],['restart','firefighter'],['is-active','--quiet','firefighter'])
- if args[0]==os.environ.get('FF_FIXTURE_SYSTEMCTL_FAILURE'):sys.exit(1)
+ if args[0]==os.environ.get('FF_FIXTURE_SYSTEMCTL_FAILURE'):
+  print('Fixture service failure: '+args[0],file=sys.stderr);sys.exit(1)
+ if args[0]=='enable':print('Created symlink fixture/firefighter.service',file=sys.stderr)
 else:raise RuntimeError('Unimplemented fixture command '+name)
 '''
 
@@ -166,6 +168,9 @@ llm=config['llm']
 assert llm['backend'] in ('api','anthropic','command')
 if llm['backend']!='command':assert os.environ.get(llm['api_key_env'])==os.environ.get('FF_FIXTURE_EXPECTED_KEY')
 print('Local doctor fixture passed; no API calls.')
+if os.environ.get('FF_FIXTURE_DOCTOR_FAILURE'):
+ print('MISSING fixture prerequisite')
+ print('Fixture setup checks require attention',file=sys.stderr)
 sys.exit(int(os.environ.get('FF_FIXTURE_DOCTOR_FAILURE','0')))
 '''
 
@@ -448,8 +453,10 @@ class InstallTests(unittest.TestCase):
                     self.assertIn(url,env)
                     self.assertEqual((f.stage/'etc/firefighter/config.json').stat().st_mode&0o777,0o600)
                     self.assertEqual((f.stage/'etc/firefighter/firefighter.env').stat().st_mode&0o777,0o600)
-                    self.assertIn('Test accepted. Check your chat',out)
-                    self.assertIn('Reporting: '+{'discord':'Discord','slack':'Slack','grokbot':'Grok Bot'}[kind],out)
+                    self.assertIn('Test message sent. Check your chat.',out)
+                    self.assertNotIn('Reporting:',out)
+                    self.assertNotIn('Local doctor fixture',out)
+                    self.assertNotIn('Created symlink',out)
                     self.assertNotIn(url,out);self.assertNotIn(TOKEN,out);self.assertNotIn(KEY,out)
                     self.assertNotIn(url,json.dumps(f.events()));self.assertNotIn(TOKEN,json.dumps(f.events()))
                     events=f.events();notification=next(i for i,e in enumerate(events) if e[0]=='notify-test')
@@ -491,7 +498,7 @@ class InstallTests(unittest.TestCase):
         self.f.env['FF_FIXTURE_NOTIFY_FAILURES']='1'
         prompts=[(b'Messaging [1]: ','1'),(b'Webhook URL (hidden): ',WEBHOOK),(b'Test failed [1]: ','')]
         code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
-        self.assertIn('The test failed',out);self.assertIn('Test accepted',out)
+        self.assertIn('The test failed',out);self.assertIn('Test message sent',out)
         self.assertEqual(len([e for e in self.f.events() if e[0]=='notify-test']),2)
         self.assertNotIn(WEBHOOK,out)
     def test_failed_message_test_can_reconfigure(self):
@@ -507,7 +514,7 @@ class InstallTests(unittest.TestCase):
         code,out=self.f.run(answer=PHRASE,messaging=prompts);self.assertEqual(code,0,out)
         self.assertEqual(json.loads((self.f.stage/'etc/firefighter/config.json').read_text())['report'],{'type':'none'})
         self.assertNotIn('FIREFIGHTER_NOTIFY_URL',(self.f.stage/'etc/firefighter/firefighter.env').read_text())
-        self.assertIn('Reporting: Local only.',out)
+        self.assertIn('Local only selected.',out)
     def test_failed_message_test_cancel_preserves_existing_files_and_service(self):
         old_config,old_env=self.f.configured();self.f.env['FF_FIXTURE_NOTIFY_FAILURES']='99'
         prompts=[(b'Messaging [1]: ','1'),(b'Webhook URL (hidden): ',WEBHOOK),(b'Test failed [1]: ','4')]
@@ -559,6 +566,8 @@ class InstallTests(unittest.TestCase):
     def test_doctor_failure_never_installs_or_starts(self):
         self.f.env['FF_FIXTURE_DOCTOR_FAILURE']='1'
         code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0)
+        self.assertIn('MISSING fixture prerequisite',out)
+        self.assertIn('Fixture setup checks require attention',out)
         self.assert_not_started();self.assertFalse((self.f.stage/'usr/local/bin/firefighter').exists())
     def test_fetch_failure_does_not_compile_or_start(self):
         self.f.env['FF_FIXTURE_FETCH_FAILURE']='1'
@@ -598,10 +607,18 @@ class InstallTests(unittest.TestCase):
     def test_symlink_marker_is_rejected(self):
         marker=self.f.acknowledgment();saved=marker.with_name('saved');marker.rename(saved);marker.symlink_to(saved)
         code,out=self.f.run();self.assertNotEqual(code,0);self.assertIn('symlink',out);self.assert_untouched()
-    def test_acknowledgment_not_persisted_when_service_start_fails(self):
-        self.f.env['FF_FIXTURE_SYSTEMCTL_FAILURE']='restart'
-        code,out=self.f.run(answer=PHRASE);self.assertNotEqual(code,0)
-        self.assertFalse((self.f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
+    def test_acknowledgment_not_persisted_when_service_setup_fails(self):
+        for command in ('enable','restart'):
+            with self.subTest(command=command):
+                f=Fixture()
+                try:
+                    f.env['FF_FIXTURE_SYSTEMCTL_FAILURE']=command
+                    code,out=f.run(answer=PHRASE);self.assertNotEqual(code,0)
+                    self.assertIn('Fixture service failure: '+command,out)
+                    self.assertNotIn('Firefighter started as root',out)
+                    self.assertFalse((f.stage/'etc/firefighter/install-risk-acknowledgment').exists())
+                    if command=='enable':self.assertNotIn(['systemctl','restart','firefighter'],f.events())
+                finally:f.close()
     def test_truncated_pipe_never_begins_installation(self):
         text=(self.f.repo/'deploy/bootstrap.sh').read_text()
         code,out=self.f.run(script=text[:text.index('  ff_require_ack')+len('  ff_require_ack')])
