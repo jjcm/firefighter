@@ -43,7 +43,6 @@ func DefaultConfig() Config {
 		{Name: "ubuntu-usn", Type: "rss", URL: "https://ubuntu.com/security/notices/rss.xml", IntervalSeconds: 120},
 		{Name: "cisa-kev", Type: "kev", IntervalSeconds: 300},
 		{Name: "nvd", Type: "nvd", IntervalSeconds: 300, LookbackHours: 24, TokenEnv: "NVD_API_KEY", PageSize: 500},
-		{Name: "x", Type: "x", IntervalSeconds: 60, LookbackHours: 1, TokenEnv: "X_BEARER_TOKEN", Query: intel.DefaultXQuery},
 	}}
 }
 

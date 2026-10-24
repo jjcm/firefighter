@@ -25,16 +25,8 @@
       "type": "nvd",
       "interval_seconds": 300,
       "lookback_hours": 24,
-	  "page_size": 500,
+      "page_size": 500,
       "token_env": "NVD_API_KEY"
-    },
-    {
-      "name": "x",
-      "type": "x",
-      "interval_seconds": 60,
-      "lookback_hours": 1,
-      "token_env": "X_BEARER_TOKEN",
-      "query": "(CVE OR \"zero-day\" OR \"0day\" OR \"security advisory\" OR \"remote code execution\" OR \"actively exploited\") -is:retweet"
     }
   ]
 }

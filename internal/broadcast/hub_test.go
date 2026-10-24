@@ -612,6 +612,65 @@ func TestRecentBoardSortsPublicationWithoutChangingDeliverySequence(t *testing.T
 	}
 }
 
+func TestRecentBoardExcludesRemovedSourcesWithoutChangingSignedHistory(t *testing.T) {
+	h, cfg, public := fixtureHub(t)
+	now := time.Now().UTC()
+	h.now = func() time.Time { return now }
+	h.config.Sources = append(h.config.Sources, SourceConfig{Name: "removed", Type: "rss", URL: "https://example.invalid/removed", IntervalSeconds: 60})
+	activeItems := noticeItems(2)
+	activeItems[0].PublishedAt = now.Add(-2 * time.Hour)
+	activeItems[1].PublishedAt = now.Add(-time.Hour)
+	pollFixture(t, h, activeItems, "active-checkpoint")
+	removedItems := noticeItems(2)
+	for i := range removedItems {
+		removedItems[i].PublishedAt = now
+	}
+	if err := h.PollOnce(context.Background(), ScheduledSource{Name: "removed", Every: time.Minute, Source: fixtureSource(func(context.Context, string) (intel.Result, error) {
+		return intel.Result{Items: removedItems, Cursor: "removed-checkpoint"}, nil
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := h.Recent(1)
+	if err != nil || len(initial.Notices) != 1 || initial.Notices[0].Source != "removed" {
+		t.Fatalf("newer configured source missing from initial board: %+v err=%v", initial, err)
+	}
+	statePath := filepath.Join(cfg.StateDir, "hubstate.json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Restart with only the fixture source configured, retaining the same state.
+	reopened, err := Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopened.now = func() time.Time { return now }
+	recent, err := reopened.Recent(1)
+	if err != nil || len(recent.Notices) != 1 || recent.Notices[0].Source != "fixture" || recent.Notices[0].Seq != 2 {
+		t.Fatalf("removed source displaced active notices: %+v err=%v", recent, err)
+	}
+	envelope, batch := getEnvelope(t, reopened.Handler(), "/api/v1/notices?after=0&limit=4")
+	if !ed25519.Verify(public, envelope.Payload, envelope.Signature) || batch.Latest != 4 || batch.NextCursor != 4 || batch.HasMore || len(batch.Notices) != 4 {
+		t.Fatalf("signed historical delivery changed after source removal: %+v", batch)
+	}
+	for i, notice := range batch.Notices {
+		if notice.Seq != uint64(i+1) || (i >= 2 && notice.Source != "removed") {
+			t.Fatalf("stored notice lost or reordered: %+v", notice)
+		}
+	}
+	if reopened.state.Sources["removed"].Cursor != "removed-checkpoint" || reopened.state.Sources["fixture"].Cursor != "active-checkpoint" {
+		t.Fatal("board filtering changed upstream checkpoints")
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("board filtering rewrote stored history: %v", err)
+	}
+}
+
 func TestNVDHubPageSizeIsConfiguredAndBounded(t *testing.T) {
 	for _, configured := range []int{0, 37} {
 		t.Run(fmt.Sprint(configured), func(t *testing.T) {

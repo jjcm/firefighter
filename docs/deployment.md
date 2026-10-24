@@ -3,8 +3,9 @@
 The public deployment uses [https://45.76.243.18/](https://45.76.243.18/) for the
 notice board, [FAQ](https://45.76.243.18/faq), [signed notices](https://45.76.243.18/api/v1/notices), and
 [source health](https://45.76.243.18/api/v1/status). The status endpoint is the
-source of truth for upstream availability. X support is included, but an X token
-or configuration entry alone is not proof that X intake is operating.
+source of truth for upstream availability. The hosted deployment and default hub
+configuration use Ubuntu notices, CISA KEV, and NVD. Paid X intake is currently
+disabled to stop API spend; the integration remains available as an opt-in source.
 
 The hub collects public advisory data once. Subscribers receive signed notices,
 then use their own inventory, model credentials, and local root runner to assess
@@ -156,6 +157,19 @@ The deployment uses a publicly trusted IP certificate. A private installation
 can instead distribute a CA bundle and configure the client's absolute `ca_file`
 path. Hostname/IP matching remains enabled, and the Ed25519 publisher pin remains
 required independently of TLS.
+
+## Optional X intake (currently disabled)
+
+The deployed hub has no X source in its active `sources` array, so it schedules no
+X API requests. The existing credential and source cursor are retained privately;
+previously collected notices remain in signed history. The live notice board only
+shows currently configured sources.
+
+To re-enable paid X intake later, explicitly add an X source to the hub configuration
+and restart the hub. On the current VPS, its previous source entry is saved in the
+root-only `/etc/firefighter-hub/x-source.disabled.json` file. Keep the credential in
+the private hub environment file. Review the query and provider pricing before
+re-enabling. No client configuration change is required.
 
 ## Publish downloads and the public key
 

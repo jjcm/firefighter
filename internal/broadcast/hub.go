@@ -265,7 +265,8 @@ func (h *Hub) Batch(after uint64, limit int) (Batch, error) {
 }
 
 // Recent is an informational board view, deliberately separate from the signed
-// sequential client feed. Reordering this view never changes delivery cursors.
+// sequential client feed. It shows only currently configured sources; filtering
+// or reordering this view never changes stored history or delivery cursors.
 type Recent struct {
 	Version    int       `json:"version"`
 	Kind       string    `json:"kind"`
@@ -279,9 +280,15 @@ func (h *Hub) Recent(limit int) (Recent, error) {
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	indices := make([]int, len(h.state.Notices))
-	for i := range indices {
-		indices[i] = i
+	active := make(map[string]bool, len(h.config.Sources))
+	for _, source := range h.config.Sources {
+		active[source.Name] = true
+	}
+	indices := make([]int, 0, len(h.state.Notices))
+	for i, entry := range h.state.Notices {
+		if active[entry.Notice.Source] {
+			indices = append(indices, i)
+		}
 	}
 	when := func(n Notice) time.Time {
 		if n.PublishedAt.IsZero() {

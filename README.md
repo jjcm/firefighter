@@ -4,7 +4,7 @@ An autonomous, API-driven incident-response daemon for **Ubuntu**, written in Go
 
 [Public notice board](https://45.76.243.18/) · [FAQ](https://45.76.243.18/faq) · [Source health](https://45.76.243.18/api/v1/status) · [Deployment guide](docs/deployment.md)
 
-The shared hub ingests disclosures once and distributes signed notices to subscribed servers. Each server independently inventories its own host, asks its configured model what to do, and performs local remediation. **The hub distributes advisory data only; it has no remote-command channel.** Signatures authenticate the publisher, while notice text remains untrusted input. The board reports current source health; X support being configured does not mean X access is working.
+The shared hub ingests disclosures once and distributes signed notices to subscribed servers. Each server independently inventories its own host, asks its configured model what to do, and performs local remediation. **The hub distributes advisory data only; it has no remote-command channel.** Signatures authenticate the publisher, while notice text remains untrusted input. The hosted hub currently polls Ubuntu notices, CISA KEV, and NVD. Paid X intake is disabled; the integration remains available for an operator to enable later. The board reports current source health.
 
 This is a working initial implementation with fixture-tested execution and recovery paths. It has not been validated against a live compromised production server. A patch or a clean scanner result is never treated as proof that an intrusion did not occur.
 
