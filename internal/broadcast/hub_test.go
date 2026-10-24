@@ -196,6 +196,90 @@ func TestUpstreamAndCheckpointFailuresDoNotAdvanceCursor(t *testing.T) {
 	}
 }
 
+func TestConfiguredSourceBypassesPersistedMissingCredentialBackoff(t *testing.T) {
+	for _, outcome := range []string{"success", "upstream_failure", "still_missing"} {
+		t.Run(outcome, func(t *testing.T) {
+			h, cfg, _ := fixtureHub(t)
+			now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+			h.now = func() time.Time { return now }
+			source := ScheduledSource{Name: "fixture", Every: time.Minute, Fingerprint: "unchanged-config", Source: fixtureSource(func(context.Context, string) (intel.Result, error) {
+				return intel.Result{Items: noticeItems(1), Cursor: "123"}, nil
+			})}
+			if err := h.PollOnce(context.Background(), source); err != nil {
+				t.Fatal(err)
+			}
+			source.Source = missingSource{}
+			for i := 0; i < 3; i++ {
+				now = h.state.Sources[source.Name].NextPoll
+				if err := h.PollOnce(context.Background(), source); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previous := h.state.Sources[source.Name]
+			if previous.ErrorCode != "not_configured" || previous.Failures != 3 || previous.Cursor != "123" {
+				t.Fatalf("invalid missing-credential setup: %+v", previous)
+			}
+			if err := h.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			now = now.Add(10 * time.Second)
+			reopened.now = func() time.Time { return now }
+			calls := 0
+			if outcome != "still_missing" {
+				source.Source = fixtureSource(func(_ context.Context, cursor string) (intel.Result, error) {
+					calls++
+					if cursor != "123" {
+						t.Errorf("activation lost persisted cursor: %q", cursor)
+					}
+					if outcome == "upstream_failure" {
+						return intel.Result{Items: noticeItems(2), Cursor: "uncommitted"}, errors.New("upstream unavailable")
+					}
+					return intel.Result{Items: noticeItems(2), Cursor: "456"}, nil
+				})
+			}
+			if err := reopened.PollOnce(context.Background(), source); err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := readState(cfg.StateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := persisted.Sources[source.Name]
+			if got != reopened.state.Sources[source.Name] {
+				t.Fatal("activation state was not durably committed")
+			}
+			switch outcome {
+			case "still_missing":
+				if got != previous || persisted.Sequence != 1 {
+					t.Fatalf("missing credentials bypassed retry backoff: %+v", got)
+				}
+			case "success":
+				if calls != 1 || got.Cursor != "456" || got.Failures != 0 || got.ErrorCode != "" || !got.LastSuccess.Equal(now) || persisted.Sequence != 2 {
+					t.Fatalf("activation did not ingest promptly: calls=%d state=%+v sequence=%d", calls, got, persisted.Sequence)
+				}
+			case "upstream_failure":
+				if calls != 1 || got.Cursor != "123" || got.Failures != 1 || got.ErrorCode != "upstream_unavailable" || got.LastSuccess != previous.LastSuccess || persisted.Sequence != 1 {
+					t.Fatalf("genuine failure inherited missing-credential failures or committed data: calls=%d state=%+v", calls, got)
+				}
+			}
+			if outcome != "still_missing" && !got.NextPoll.Equal(now.Add(source.Every)) {
+				t.Fatalf("activation inherited old retry delay: %s", got.NextPoll)
+			}
+			if err := reopened.PollOnce(context.Background(), source); err != nil {
+				t.Fatal(err)
+			}
+			if outcome != "still_missing" && calls != 1 {
+				t.Fatal("activation bypassed normal retry schedule after its first attempt")
+			}
+		})
+	}
+}
+
 func TestRetentionGapsAndAheadCursorsAreExplicit(t *testing.T) {
 	h, _, public := fixtureHub(t)
 	h.config.MaxNotices = 2

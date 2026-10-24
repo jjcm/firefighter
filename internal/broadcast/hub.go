@@ -96,6 +96,17 @@ func (h *Hub) PollOnce(ctx context.Context, source ScheduledSource) error {
 		previous.Cursor = ""
 		previous.NextPoll = time.Time{}
 	}
+	if previous.ErrorCode == "not_configured" {
+		switch source.Source.(type) {
+		case missingSource, *missingSource:
+		default:
+			// Credentials became available without changing the source config.
+			// Try promptly, preserving the cursor and discarding only failures
+			// accumulated while there was no upstream request to make.
+			previous.NextPoll = time.Time{}
+			previous.Failures = 0
+		}
+	}
 	if h.now().Before(previous.NextPoll) {
 		return nil
 	}
