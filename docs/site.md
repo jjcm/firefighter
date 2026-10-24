@@ -1,6 +1,6 @@
 # Public site
 
-The static site in `web/` is served by the hub on `/`. It has no build step, package dependencies, third-party scripts, remote fonts, analytics, or secrets. Deploy `index.html`, `styles.css`, `app.js`, and `assets/` together. The hub and static assets must share an HTTPS origin.
+The static site in `web/` is served by the hub on `/`. It has no build step, package dependencies, third-party scripts, remote fonts, analytics, or secrets. Deploy `index.html`, `faq.html`, `styles.css`, `app.js`, and `assets/` together. The hub maps `/faq` and `/faq/` to `faq.html`; `/faq.html` also works. The hub and static assets must share an HTTPS origin.
 
 ## Design
 
@@ -16,21 +16,36 @@ API responses are limited to 3 MiB and an eight-second deadline. Missing X crede
 
 ## Downloads and setup
 
+The public quickstart begins with:
+
+```sh
+curl -fsSL https://45.76.243.18/install.sh | sudo bash
+```
+
+The first installation reads this exact acknowledgment from `/dev/tty`: `I understand the risks and that this might delete my entire server.` No terminal or a mismatched sentence aborts before writes. Successful installation records the acknowledgment in root-owned mode `0600` at `/etc/firefighter/install-risk-acknowledgment`; later upgrades with a valid record do not repeat it. The acknowledgment is an installation step, and the running responder still requires no approvals.
+
+The bootstrap detects Ubuntu amd64/arm64, verifies downloaded artifact checksums internally, and installs the responder without starting or restarting it. It preserves existing configuration and secrets. New installations use the central signed feed and OpenRouter model `deepseek/deepseek-v4.1-flash-1017`, with `OPENROUTER_API_KEY` configured locally. The site's Configure and Run steps remain necessary; upgrades of a running service need a separate restart. Grok Bot's bridge is available through the source installer and is not included in this binary bootstrap.
+
 The quickstart expects these same-origin files, provided by the deployment process:
 
+- `/install.sh`, served from the reviewed `deploy/bootstrap.sh`
 - `/downloads/firefighter-linux-amd64` and `/downloads/firefighter-linux-arm64`
 - `/downloads/SHA256SUMS`
-- `/downloads/firefighter.example.json`
+- `/downloads/firefighter-config.json`
 - `/downloads/firefighter.service`
 - `/downloads/firefighter.env.example`
 - `/downloads/firefighter-hub.pub`
 
-On HTTPS, copyable commands use the current origin. On a local HTTP preview they retain `YOUR_NOTICE_HUB`. Examples are for a new installation; upgrades must preserve operator configuration. The public key download is a distribution convenience, not independent proof of authenticity. Verify it over a separate trusted channel before pinning. Download checksums also require a trusted release comparison.
+On HTTPS, copyable commands use the current origin. On a local HTTP preview they retain `YOUR_NOTICE_HUB`. The public key download is a distribution convenience, not independent proof of authenticity. Verify it over a separate trusted channel before pinning. Checksums fetched from the same origin detect mismatched artifacts but do not independently authenticate a release.
+
+The [FAQ](https://45.76.243.18/faq) describes autonomous operation, costs, and limitations. The installer is a separate download initiated by an operator; executable instructions never enter the signed notice protocol.
 
 The repository links currently require GitHub access. The site makes no public-source availability claim. Configure a compatible model API and credential environment variable on each host; local observations may leave the host for that API, with best-effort redaction.
 
 ## Hosting and checks
 
 Use a restrictive Content Security Policy such as `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`, plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. Do not place configuration, credentials, hub state, or audit files under the static directory. Keep public downloads intentionally scoped.
+
+nginx serves the exact `/install.sh` route from `/opt/firefighter/install.sh`, copied from `deploy/bootstrap.sh`. It does not expose the deployment directory or add shell files to the hub's static extension allowlist. Other API paths retain their existing strict routing and notice schema.
 
 Local preview: `python3 -m http.server 4173 --bind 127.0.0.1 --directory web`. The feed honestly shows unavailable unless an API is supplied on that origin. JavaScript syntax was checked with `node --check web/app.js`; desktop and 390-pixel mobile layouts were inspected in Chrome. A separate, unshipped local fixture verified search, source filters, pagination, tab switching, degraded X status, literal hostile HTML text, and rejection of `javascript:` source links. The mobile page had no horizontal document overflow. A follow-up fixture confirmed publication ordering overrides ingestion order, sequence breaks publication-time ties, historical years remain visible, and zero dates never produce source-success tooltips.

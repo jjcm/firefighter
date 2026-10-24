@@ -1,7 +1,7 @@
 # Deployment
 
 The public deployment uses [https://45.76.243.18/](https://45.76.243.18/) for the
-notice board, [signed notices](https://45.76.243.18/api/v1/notices), and
+notice board, [FAQ](https://45.76.243.18/faq), [signed notices](https://45.76.243.18/api/v1/notices), and
 [source health](https://45.76.243.18/api/v1/status). The status endpoint is the
 source of truth for upstream availability. X support is included, but an X token
 or configuration entry alone is not proof that X intake is operating.
@@ -27,6 +27,7 @@ command output, credentials, or private incident records to the hub.
 | Hub environment | `/etc/firefighter-hub/firefighter-hub.env`, root-owned `0600` |
 | Hub state and signing key | `/var/lib/firefighter-hub`, directory `0700`, files `0600` |
 | Website assets | `/opt/firefighter/web` |
+| Public bootstrap | `/opt/firefighter/install.sh`, served only at `/install.sh` |
 | Public downloads | `/opt/firefighter/downloads`, served directly by nginx |
 | ACME challenge webroot | `/var/lib/letsencrypt` |
 | Administrator access | SSH alias `firefighter-host`, user `firefighter-admin` |
@@ -73,6 +74,7 @@ sudo install -m 0755 dist/firefighter-hub-linux-amd64 /usr/local/bin/firefighter
 sudo install -o root -g firefighter-hub -m 0640 \
   configs/hub.example.json /etc/firefighter-hub/config.json
 sudo cp -R web/. /opt/firefighter/web/
+sudo install -m 0644 deploy/bootstrap.sh /opt/firefighter/install.sh
 sudo install -m 0644 deploy/firefighter-hub.service /etc/systemd/system/firefighter-hub.service
 ```
 
@@ -107,8 +109,12 @@ redistributing and verifying a new public pin on every client.
 The supplied [nginx configuration](../deploy/nginx.conf) matches this deployment.
 It proxies the site and APIs to the loopback hub, overwrites `X-Real-IP` and
 `X-Forwarded-For` with nginx's observed client address, and serves downloads
-directly from `/opt/firefighter/downloads`. The overwrite is required because the
-hub trusts the local proxy's address header for rate limiting.
+directly from `/opt/firefighter/downloads`. The exact `/install.sh` route serves
+only `/opt/firefighter/install.sh` as plain text; it does not expose the deployment
+directory. The hub maps `/faq` and `/faq/` to the public `faq.html` asset. These web
+routes do not change the signed notice schema or add an API for running commands.
+The address overwrite is required because the hub trusts the local proxy's header
+for rate limiting.
 
 For an initial installation, enable the HTTP server and ACME challenge location
 before obtaining a certificate. Do not enable an HTTPS block referring to
@@ -153,39 +159,81 @@ required independently of TLS.
 
 ## Publish downloads and the public key
 
-Only release artifacts belong in the download directory. Copy the chosen Linux
-binaries there and generate a checksum manifest after copying:
+Only public release artifacts belong in the download directory. Publish both
+responder architectures, the bootstrap configuration, environment template,
+service, and public key before generating their checksum manifest:
 
 ```sh
-sudo install -m 0644 dist/firefighter*-linux-* /opt/firefighter/downloads/
-(cd /opt/firefighter/downloads && sha256sum firefighter*-linux-*) \
-  | sudo tee /opt/firefighter/downloads/SHA256SUMS >/dev/null
+sudo install -m 0644 dist/firefighter-linux-amd64 dist/firefighter-linux-arm64 \
+  /opt/firefighter/downloads/
+sudo install -m 0644 deploy/firefighter-config.json \
+  /opt/firefighter/downloads/firefighter-config.json
+sudo install -m 0644 deploy/firefighter-bootstrap.env.example \
+  /opt/firefighter/downloads/firefighter.env.example
+sudo install -m 0644 deploy/firefighter.service \
+  /opt/firefighter/downloads/firefighter.service
 sudo -u firefighter-hub /usr/local/bin/firefighter-hub public-key \
   --config /etc/firefighter-hub/config.json \
   | sudo tee /opt/firefighter/downloads/firefighter-hub.pub >/dev/null
+(cd /opt/firefighter/downloads && sha256sum \
+  firefighter-linux-amd64 firefighter-linux-arm64 firefighter-config.json \
+  firefighter.env.example firefighter.service firefighter-hub.pub) \
+  | sudo tee /opt/firefighter/downloads/SHA256SUMS >/dev/null
+sudo install -m 0644 deploy/bootstrap.sh /opt/firefighter/install.sh
 ```
 
 The `public-key` command prints only the public Ed25519 key. The public download
 lets clients obtain that key, but they should compare it with an independently
-verified operator value before pinning it. A checksum downloaded alongside a
-binary detects transfer corruption; verify the expected checksum through a
-trusted release channel when establishing the binary's provenance.
+verified operator value before pinning it. Ensure the public configuration and
+bootstrap's embedded publisher pin both match that verified key; the installer
+rejects a mismatched template and preserves existing client pins. The bootstrap verifies downloaded
+artifacts against `SHA256SUMS`; a manifest fetched from the same server does not
+independently authenticate a release. Publish only reviewed configuration without
+credentials, and keep real environment files outside these public paths.
 
 ## Configure a subscribing Ubuntu server
 
-Install the responder using the main [Ubuntu setup instructions](../README.md#run-on-ubuntu).
-Replace its complete `sources` array so it subscribes to the central feed only:
+From an interactive Ubuntu terminal:
+
+```sh
+curl -fsSL https://45.76.243.18/install.sh | sudo bash
+```
+
+On the first installation, type this exact sentence when prompted:
+
+```text
+I understand the risks and that this might delete my entire server.
+```
+
+The prompt reads `/dev/tty`, not the piped script. No terminal or a different
+sentence causes an exit before writes. A successful installation stores a
+root-owned, mode `0600` acknowledgment at
+`/etc/firefighter/install-risk-acknowledgment`; a valid record skips this prompt on
+later upgrades. This does not add runtime approvals to the autonomous responder.
+
+The bootstrap selects amd64 or arm64, preserves existing configuration and
+secrets, and does not start or restart the daemon. Its new-install configuration already
+subscribes to the central signed feed and uses OpenRouter's
+`deepseek/deepseek-v4.1-flash-1017` with `OPENROUTER_API_KEY`. Review the installed
+publisher pin, then configure credentials and run the service using the
+[Ubuntu setup instructions](../README.md#run-on-ubuntu). The binary bootstrap does
+not install the Grok Bot bridge; the source installer includes it.
+After upgrading a configured, running responder, restart it separately at an
+appropriate point to load the new binary.
+
+For an existing configuration that polls upstream sources directly, replace the complete `sources`
+array and configure the model API as needed. This fragment follows the public
+bootstrap defaults; substitute the independently verified publisher key:
 
 ```json
 {
   "sources": [
     {
-      "name": "central-notices",
+      "name": "firefighter-central",
       "type": "broadcast",
-      "url": "https://45.76.243.18/api/v1/notices",
+      "url": "https://45.76.243.18",
       "public_key": "YOUR_VERIFIED_BASE64_ED25519_PUBLIC_KEY",
-      "interval_seconds": 15,
-      "lookback_hours": 0
+      "interval_seconds": 30
     }
   ],
   "llm": {
@@ -193,7 +241,7 @@ Replace its complete `sources` array so it subscribes to the central feed only:
     "base_url": "https://openrouter.ai/api/v1",
     "model": "deepseek/deepseek-v4.1-flash-1017",
     "api_key_env": "OPENROUTER_API_KEY",
-    "timeout_seconds": 120,
+    "timeout_seconds": 180,
     "json_mode": true
   }
 }
@@ -220,6 +268,8 @@ sudo systemctl status firefighter-hub nginx
 sudo journalctl -u firefighter-hub -f
 curl --fail https://45.76.243.18/healthz
 curl --fail https://45.76.243.18/api/v1/status
+curl --fail --head https://45.76.243.18/faq
+curl --fail --head https://45.76.243.18/install.sh
 ```
 
 `/healthz` checks process liveness. Inspect source `state`, `last_success`, and

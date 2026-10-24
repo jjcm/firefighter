@@ -193,7 +193,13 @@ func (h *Hub) serveStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	clean := path.Clean("/" + r.URL.Path)
+	staticPath := r.URL.Path
+	// Only this named page gets an extensionless alias; unknown routes still
+	// pass through the same narrow file allowlist and containment checks.
+	if staticPath == "/faq" || staticPath == "/faq/" {
+		staticPath = "/faq.html"
+	}
+	clean := path.Clean("/" + staticPath)
 	for _, segment := range strings.Split(clean, "/") {
 		if strings.HasPrefix(segment, ".") {
 			http.NotFound(w, r)
@@ -201,7 +207,7 @@ func (h *Hub) serveStatic(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	file := filepath.Join(root, filepath.FromSlash(clean))
-	if strings.HasSuffix(r.URL.Path, "/") || clean == "/" {
+	if strings.HasSuffix(staticPath, "/") || clean == "/" {
 		file = filepath.Join(file, "index.html")
 	}
 	if !publicExtensions[strings.ToLower(filepath.Ext(file))] {

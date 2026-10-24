@@ -1,4 +1,4 @@
-.PHONY: build test check linux clean
+.PHONY: build test test-install check linux clean
 
 VERSION ?= dev
 
@@ -11,7 +11,10 @@ build:
 test:
 	go test -race ./...
 
-check: test
+test-install:
+	python3 deploy/test_install.py
+
+check: test test-install
 	go vet ./...
 
 linux:

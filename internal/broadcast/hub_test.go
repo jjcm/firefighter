@@ -418,6 +418,61 @@ func TestStaticFilesCannotExposeStateOrSymlinkEscapes(t *testing.T) {
 	}
 }
 
+func TestFAQAliasesKeepStaticBoundaries(t *testing.T) {
+	h, cfg, _ := fixtureHub(t)
+	web := t.TempDir()
+	h.config.WebsiteDir = web
+	faq := filepath.Join(web, "faq.html")
+	if err := os.WriteFile(faq, []byte("experimental root responder FAQ"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Even a shell script accidentally placed in the website tree is not public.
+	if err := os.WriteFile(filepath.Join(web, "install.sh"), []byte("private script"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler := h.Handler()
+	for _, target := range []string{"/faq", "/faq/", "/faq.html"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+			if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
+				t.Errorf("%s %s returned %d %s", method, target, rec.Code, rec.Body.String())
+			}
+			if method == http.MethodGet && rec.Body.String() != "experimental root responder FAQ" {
+				t.Errorf("FAQ alias %s returned wrong contents", target)
+			}
+			if method == http.MethodHead && rec.Body.Len() != 0 {
+				t.Errorf("HEAD %s returned a body", target)
+			}
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, target, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s accepted: %d", target, rec.Code)
+		}
+	}
+	for _, target := range []string{"/faq/unknown", "/install.sh", "/install.sh/extra", "/api/v1/install.sh", "/unknown"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("unexpected public path %s: %d", target, rec.Code)
+		}
+	}
+	if err := os.Remove(faq); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(cfg.StateDir, "signing.key"), faq); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"/faq", "/faq/", "/faq.html"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("FAQ symlink escape %s: %d", target, rec.Code)
+		}
+	}
+}
+
 func TestKeyInitializationDoesNotReplacePin(t *testing.T) {
 	_, cfg, public := fixtureHub(t)
 	if _, err := InitKey(cfg.StateDir); err == nil {

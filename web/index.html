@@ -15,7 +15,7 @@
   <header class="site-header">
     <div class="header-inner">
       <a class="brand" href="#" aria-label="Firefighter home"><img src="/assets/flame.svg" width="28" height="35" alt=""><span>Firefighter</span></a>
-      <nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#live-notices">Live notices</a><a href="#get-started">Get started</a></nav>
+      <nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#live-notices">Live notices</a><a href="/faq/">FAQ</a></nav>
       <a class="button button-primary header-cta" href="#get-started"><span aria-hidden="true">&gt;_</span> Deploy Firefighter</a>
     </div>
   </header>
@@ -27,6 +27,7 @@
         <h1 id="hero-title">The internet is on fire.<br>Your server should<br class="desktop-break"> respond.</h1>
         <p class="hero-description">Autonomous defense for Ubuntu. Read the signal.<br class="wide-break"> Investigate locally. Patch, verify, and report—<br class="wide-break">without waiting for approval.</p>
         <div class="hero-actions"><a class="button button-primary" href="#get-started"><span aria-hidden="true">&gt;_</span> Deploy Firefighter</a><a class="button button-outline" href="#live-notices">Explore the network <span aria-hidden="true">↗</span></a></div>
+        <p class="hero-risk">Experimental. Unproven. Runs as root. <a href="/faq/">Read the risks before installing ↗</a></p>
       </div>
       <figure class="network" aria-labelledby="network-title network-caption">
         <div class="network-title" id="network-title">Notices, never<br>commands.</div>
@@ -62,37 +63,20 @@
     </section>
 
     <section class="deployment" id="get-started" aria-labelledby="deployment-title">
-      <div class="quickstart"><div class="section-heading"><span class="terminal-icon" aria-hidden="true">&gt;_</span><h2 class="eyebrow ruled" id="deployment-title">Installation quickstart</h2></div><p class="quickstart-intro">A local agent, your model API, and one shared notice feed.</p><div class="setup-tabs" role="tablist" aria-label="Setup steps"><button type="button" id="tab-install" role="tab" aria-selected="true" aria-controls="panel-install">1. Install</button><button type="button" id="tab-connect" role="tab" aria-selected="false" aria-controls="panel-connect" tabindex="-1">2. Connect</button><button type="button" id="tab-run" role="tab" aria-selected="false" aria-controls="panel-run" tabindex="-1">3. Run</button></div>
-        <div class="setup-panel" id="panel-install" role="tabpanel" aria-labelledby="tab-install"><div class="code-heading"><span>Ubuntu · Linux amd64</span><button type="button" class="copy-button" data-copy="install-code">Copy</button></div><pre><code id="install-code">curl -fLO https://YOUR_NOTICE_HUB/downloads/firefighter-linux-amd64
-curl -fLO https://YOUR_NOTICE_HUB/downloads/SHA256SUMS
-sha256sum --check --ignore-missing SHA256SUMS
-sudo install -m 0755 firefighter-linux-amd64 /usr/local/bin/firefighter
-sudo mkdir -p /etc/firefighter
-curl -fLO https://YOUR_NOTICE_HUB/downloads/firefighter.example.json
-sudo install -m 0600 firefighter.example.json /etc/firefighter/config.json</code></pre><p class="setup-note">For a new installation. Preserve existing configuration when upgrading. For ARM servers, use the <a href="/downloads/firefighter-linux-arm64">arm64 binary</a>. Compare checksums with a trusted release before installing.</p></div>
-        <div class="setup-panel" id="panel-connect" role="tabpanel" aria-labelledby="tab-connect" hidden><div class="code-heading"><span>/etc/firefighter/config.json · sources</span><button type="button" class="copy-button" data-copy="connect-code">Copy</button></div><pre><code id="connect-code">"sources": [{
-  "name": "central-notices",
-  "type": "broadcast",
-  "url": "https://YOUR_NOTICE_HUB/api/v1/notices",
-  "public_key": "YOUR_VERIFIED_PUBLIC_KEY",
-  "interval_seconds": 15,
-  "lookback_hours": 0
-}]</code></pre><p class="setup-note">Replace the existing sources list to use central intake. <a href="/downloads/firefighter-hub.pub">Get the hub public key</a>, verify it independently, then pin it here. Clients verify signatures; the browser board displays notices without authenticating them.</p></div>
-        <div class="setup-panel" id="panel-run" role="tabpanel" aria-labelledby="tab-run" hidden><div class="code-heading"><span>System service · your model API</span><button type="button" class="copy-button" data-copy="run-code">Copy</button></div><pre><code id="run-code">curl -fLO https://YOUR_NOTICE_HUB/downloads/firefighter.service
-curl -fLO https://YOUR_NOTICE_HUB/downloads/firefighter.env.example
-sudo install -m 0644 firefighter.service /etc/systemd/system/
-sudo install -m 0600 firefighter.env.example /etc/firefighter/firefighter.env
-sudoedit /etc/firefighter/firefighter.env /etc/firefighter/config.json
-sudo systemctl daemon-reload
-sudo systemctl enable --now firefighter
-sudo journalctl -u firefighter -f</code></pre><p class="setup-note">Before starting, set the credential named by <code>llm.api_key_env</code> in the root-only environment file. Choose your compatible API/model and add application paths, health checks, and rotation hooks. This service runs as root without approval prompts.</p></div>
+      <div class="quickstart"><div class="section-heading"><span class="terminal-icon" aria-hidden="true">&gt;_</span><h2 class="eyebrow ruled" id="deployment-title">Installation quickstart</h2></div><p class="quickstart-intro">One installer. Your model API. A root agent that acts on its own.</p>
+        <div class="install-warning"><strong>This might delete your entire server.</strong><p>This is an experimental, unproven approach. Faster patching is the bet; being safer is not a proven result. Keep tested, independent backups and read the <a href="/faq/">FAQ</a>.</p><p>Before the first installation, you must type this exact sentence in your terminal:</p><p class="risk-acknowledgement">I understand the risks and that this might delete my entire server.</p></div>
+        <div class="setup-tabs" role="tablist" aria-label="Setup steps"><button type="button" id="tab-install" role="tab" aria-selected="true" aria-controls="panel-install">1. Install</button><button type="button" id="tab-configure" role="tab" aria-selected="false" aria-controls="panel-configure" tabindex="-1">2. Configure</button><button type="button" id="tab-run" role="tab" aria-selected="false" aria-controls="panel-run" tabindex="-1">3. Run</button></div>
+        <div class="setup-panel" id="panel-install" role="tabpanel" aria-labelledby="tab-install"><div class="code-heading"><span>Ubuntu · architecture detected automatically</span><button type="button" class="copy-button" data-copy="install-code">Copy</button></div><pre><code id="install-code">curl -fsSL https://45.76.243.18/install.sh | sudo bash</code></pre><p class="setup-note">Executes the <a href="/install.sh">installer</a> as root. It checks download hashes, installs the binary and service, and provisions the shared feed with its pinned public key. Existing configuration is preserved. A new installation stays stopped until you configure your model API and start it.</p><p class="setup-note">Hashes from the same server are not independent proof of trust. For advanced key and release verification, see the <a href="https://github.com/jjcm/firefighter/blob/main/docs/site.md" target="_blank" rel="noopener noreferrer">verification notes</a> (repository access required).</p></div>
+        <div class="setup-panel" id="panel-configure" role="tabpanel" aria-labelledby="tab-configure" hidden><div class="code-heading"><span>Local configuration · keep credentials off the command line</span><button type="button" class="copy-button" data-copy="configure-code">Copy</button></div><pre><code id="configure-code">sudoedit /etc/firefighter/firefighter.env /etc/firefighter/config.json</code></pre><p class="setup-note">Set the API credential named by <code>llm.api_key_env</code> in the root-only environment file. Choose your compatible API and model, then configure application paths, health checks, and rotation hooks. The installer supplies the shared notice-feed configuration.</p></div>
+        <div class="setup-panel" id="panel-run" role="tabpanel" aria-labelledby="tab-run" hidden><div class="code-heading"><span>Start autonomous operation · watch the local log</span><button type="button" class="copy-button" data-copy="run-code">Copy</button></div><pre><code id="run-code">sudo systemctl enable --now firefighter
+sudo journalctl -u firefighter -f</code></pre><p class="setup-note">Once started, Firefighter runs as root and makes decisions without runtime approval prompts. You own the outcomes. Stop the service with <code>sudo systemctl stop firefighter</code>.</p></div>
       </div>
       <aside class="operational-boundary"><div class="section-heading"><svg class="outline-icon" viewBox="0 0 32 36" aria-hidden="true"><path d="m16 2 12 5v11c0 8-12 16-12 16S4 26 4 18V7Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 10v10m0 4v2" stroke="currentColor" stroke-width="2"/></svg><h2 class="eyebrow ruled">Operational boundary</h2></div><h3>Runs as root.<br>Makes changes.<br>Keeps an audit trail.</h3><p>The local LLM decides what to investigate and fix. There are no runtime approval prompts. Commands, results, verification, and recovery attempts are recorded locally.</p><p>Relevant local observations are sent to your configured model API. Secret redaction is best effort.</p><p>A successful patch does not prove a host was never compromised. Backups, independent monitoring, and recovery from a trusted system still matter.</p><a class="text-link" href="https://github.com/jjcm/firefighter/blob/main/docs/threat-model.md" target="_blank" rel="noopener noreferrer">Read the trust model <span aria-hidden="true">↗</span></a><p class="repository-note">The code repository currently requires access.</p></aside>
     </section>
     <section class="closing-line" aria-label="Architecture boundary"><p>One network for the signal.<br><span>Every server owns the response.</span></p><a class="button button-outline" href="/api/v1/notices">Explore the notice API <span aria-hidden="true">↗</span></a></section>
   </main>
 
-  <footer class="container site-footer"><a class="brand" href="#"><img src="/assets/flame.svg" width="24" height="30" alt=""><span>Firefighter</span></a><span>Ubuntu-first</span><span>Built for response</span><a href="https://github.com/jjcm/firefighter" target="_blank" rel="noopener noreferrer">Code repository <span aria-hidden="true">↗</span></a><span class="footer-motto">Autonomous / Local / Accountable</span></footer>
+  <footer class="container site-footer"><a class="brand" href="#"><img src="/assets/flame.svg" width="24" height="30" alt=""><span>Firefighter</span></a><span>Ubuntu-first</span><span>Built for response</span><a href="/faq/" class="footer-faq">FAQ</a><a href="https://github.com/jjcm/firefighter" target="_blank" rel="noopener noreferrer">Code repository <span aria-hidden="true">↗</span></a><span class="footer-motto">Autonomous / Local / Accountable</span></footer>
   <div class="visually-hidden" id="copy-status" role="status" aria-live="polite"></div>
 </body>
 </html>
