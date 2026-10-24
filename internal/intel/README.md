@@ -5,6 +5,11 @@ are opaque and belong to one configured source. Persist returned items durably
 before, or atomically with, the returned cursor. Replaying items after a crash is
 expected; the caller must deduplicate using source, item ID, and content/version.
 
+The source name `local-host` is reserved for internally scheduled host reviews.
+Configuration and configurable intake adapters reject it, including case or
+surrounding-whitespace variants. Remote source labels remain notice data; they
+cannot grant a feed the host review's execution scope.
+
 On request, parsing, pagination, or page-limit errors, `Poll` returns no items,
 an error, and exactly the input cursor. This intentionally retries the complete
 window rather than marking unseen pages as ingested. A page-limit error requires

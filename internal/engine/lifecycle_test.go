@@ -156,6 +156,9 @@ func TestRunJoinsReporterBeforeShutdownAndClassifiesCanceledPlanner(t *testing.T
 	e.Version = "release-cancel-test"
 	e.State.LastHostReview = time.Now()
 	in := addIncident(e, "pending")
+	// Stopping an already-reported incident must still close its visible activity.
+	in.ReportedActivity = true
+
 	plannerStarted, senderStarted := make(chan struct{}), make(chan struct{})
 	e.Planner = plannerFunc(func(ctx context.Context, _ protocol.Request) (protocol.Decision, error) {
 		close(plannerStarted)

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/jjcm/firefighter/internal/config"
 )
 
 type FeedConfig struct {
@@ -27,8 +29,8 @@ func NewFeed(cfg FeedConfig) (*Feed, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.Name) == "" {
-		return nil, errors.New("feed requires a unique name")
+	if err := config.ValidateSourceName(cfg.Name); err != nil {
+		return nil, err
 	}
 	if cfg.Trust == "" {
 		cfg.Trust = "vendor"

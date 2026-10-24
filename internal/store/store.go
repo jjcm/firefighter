@@ -30,31 +30,42 @@ type SourceState struct {
 	Failures    int       `json:"failures"`
 }
 type Incident struct {
-	ID               string          `json:"id"`
-	Item             intel.Item      `json:"item"`
-	Status           string          `json:"status"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	NextAttempt      time.Time       `json:"next_attempt"`
-	Attempts         int             `json:"attempts"`
-	History          []protocol.Turn `json:"history"`
-	RecoveryNotes    []string        `json:"recovery_notes,omitempty"`
-	LastError        string          `json:"last_error,omitempty"`
-	ReportedActivity bool            `json:"reported_activity,omitempty"`
-	AttemptChanged   bool            `json:"attempt_changed,omitempty"`
+	ID                  string          `json:"id"`
+	Item                intel.Item      `json:"item"`
+	Status              string          `json:"status"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+	NextAttempt         time.Time       `json:"next_attempt"`
+	Attempts            int             `json:"attempts"`
+	History             []protocol.Turn `json:"history"`
+	RecoveryNotes       []string        `json:"recovery_notes,omitempty"`
+	LastError           string          `json:"last_error,omitempty"`
+	ReportedActivity    bool            `json:"reported_activity,omitempty"`
+	AttemptChanged      bool            `json:"attempt_changed,omitempty"`
+	ApplicabilityStatus string          `json:"applicability_status,omitempty"`
 }
 type Delivery struct {
 	Event       protocol.Event `json:"event"`
 	Attempts    int            `json:"attempts"`
 	NextAttempt time.Time      `json:"next_attempt"`
 }
+
+// AssessmentHealth tracks unresolved advisory investigations across daemon
+// restarts, independently of any individual advisory's reporting policy.
+type AssessmentHealth struct {
+	ConsecutiveFailures  int       `json:"consecutive_failures"`
+	LastReportedFailures int       `json:"last_reported_failures"`
+	LastReportedAt       time.Time `json:"last_reported_at,omitempty"`
+}
+
 type State struct {
-	Version        int                    `json:"version"`
-	Sources        map[string]SourceState `json:"sources"`
-	Incidents      map[string]*Incident   `json:"incidents"`
-	Outbox         []Delivery             `json:"outbox"`
-	LastHostReview time.Time              `json:"last_host_review"`
-	ReportRetryAt  time.Time              `json:"report_retry_at,omitempty"`
-	Memory         memory.State           `json:"memory"`
+	Version          int                    `json:"version"`
+	Sources          map[string]SourceState `json:"sources"`
+	Incidents        map[string]*Incident   `json:"incidents"`
+	Outbox           []Delivery             `json:"outbox"`
+	LastHostReview   time.Time              `json:"last_host_review"`
+	ReportRetryAt    time.Time              `json:"report_retry_at,omitempty"`
+	Memory           memory.State           `json:"memory"`
+	AssessmentHealth AssessmentHealth       `json:"assessment_health"`
 }
 type Record struct {
 	Time       time.Time       `json:"time"`

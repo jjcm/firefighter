@@ -354,6 +354,9 @@ func (e *Engine) ProcessOne(ctx context.Context) (bool, error) {
 	in.Status = "running"
 	in.Attempts++
 	in.AttemptChanged = false
+	if requiresApplicability(in) {
+		in.ApplicabilityStatus = "unknown"
+	}
 	in.UpdatedAt = now
 	if err := e.Store.Save(e.State); err != nil {
 		e.mu.Unlock()
@@ -403,7 +406,7 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 		memory := e.memoryContextLocked(in, inventoryInfo)
 		e.mu.Unlock()
 		instructions := e.Config.Instructions + fmt.Sprintf("\nExecution limits: command timeout_seconds must be 0..%d; the total incident time budget is %d seconds. You must assess execution results in another turn before declaring remediation complete.", min(e.Config.CommandTimeoutSeconds, 1800), e.Config.IncidentTimeoutSeconds)
-		req := protocol.Request{IncidentID: in.ID, Host: snapshot, Intel: in.Item, History: history, Memory: memory, Instructions: instructions, RotationHooks: e.Config.RotationHooks, RecoveryNotes: notes, RoundsRemaining: e.Config.MaxRounds - round}
+		req := protocol.Request{IncidentID: in.ID, Host: snapshot, Intel: in.Item, History: history, Memory: memory, Instructions: instructions, RotationHooks: e.Config.RotationHooks, RecoveryNotes: notes, RoundsRemaining: e.Config.MaxRounds - round, ApplicabilityRequired: requiresApplicability(in)}
 		decision, err := e.Planner.Decide(ctx, req)
 		if err != nil {
 			if summary, cause := assessmentInterruption(parent, ctx); cause != nil {
@@ -416,6 +419,30 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 		}
 		if err := protocol.ValidateMemoryUpdates(decision.MemoryUpdates); err != nil {
 			return e.finish(in, "deferred", "Planner returned invalid memory updates", err, nil)
+		}
+		if err := protocol.ValidateApplicability(decision.Applicability); err != nil {
+			return e.finish(in, "deferred", "Planner returned invalid applicability evidence", err, nil)
+		}
+		replanApplicability := false
+		if requiresApplicability(in) {
+			status := noticeApplicability(decision)
+			var blocked bool
+			decision, replanApplicability, blocked = gateNoticeDecision(decision)
+			e.mu.Lock()
+			in.ApplicabilityStatus = status
+			if blocked {
+				err = e.Store.Append("applicability_gate", in.ID, map[string]interface{}{"status": status, "reason": "notice does not establish applicability for the proposed work"})
+				if !slices.Contains(in.RecoveryNotes, applicabilityRecoveryNote) {
+					in.RecoveryNotes = append(in.RecoveryNotes, applicabilityRecoveryNote)
+				}
+				if !slices.Contains(notes, applicabilityRecoveryNote) {
+					notes = append(notes, applicabilityRecoveryNote)
+				}
+			}
+			e.mu.Unlock()
+			if err != nil {
+				return err
+			}
 		}
 		for _, action := range decision.Actions {
 			if err = e.Runner.Validate(action); err != nil {
@@ -469,6 +496,9 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 		e.mu.Unlock()
 		if err != nil {
 			return err
+		}
+		if replanApplicability {
+			continue
 		}
 		if len(decision.Actions) == 0 {
 			if decision.Done {
@@ -659,6 +689,9 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 	if err := e.emitLocked("assessment_finished", in.ID, summary, details); err != nil {
 		return err
 	}
+	if err := e.observeAssessmentHealthLocked(in, status, cause); err != nil {
+		return err
+	}
 	return e.Store.Save(e.State)
 }
 func (e *Engine) emit(typ, id, summary string, details map[string]interface{}) error {
@@ -694,12 +727,24 @@ func (e *Engine) emitLocked(typ, id, summary string, details map[string]interfac
 		event.Details["assessment_scope"] = "advisory"
 		if in.Item.Source == "local-host" {
 			event.Details["assessment_scope"] = "host"
+		} else {
+			status := in.ApplicabilityStatus
+			if status == "" {
+				status = "unknown"
+			}
+			event.Details["applicability_status"] = status
+			event.Details["had_reported_activity"] = in.ReportedActivity
 		}
 	}
 	auditType := "event"
 	shouldSend := e.Reporter != nil
 	if filter, ok := e.Reporter.(interface{ ShouldSend(protocol.Event) bool }); ok {
 		shouldSend = filter.ShouldSend(event)
+	}
+	// Apply relevance policy before any sender, including custom/legacy signed
+	// webhooks without a ShouldSend filter. Quiet records still enter the audit.
+	if report.QuietAdvisory(event) {
+		shouldSend = false
 	}
 	if shouldSend {
 		auditType = "report_queued"
@@ -849,6 +894,12 @@ func (e *Engine) cleanDecision(d protocol.Decision) protocol.Decision {
 	d.Evidence = append([]string(nil), d.Evidence...)
 	for i := range d.Evidence {
 		d.Evidence[i] = e.Redact(d.Evidence[i])
+	}
+	if d.Applicability != nil {
+		claim := *d.Applicability
+		claim.Product, claim.Condition = e.Redact(claim.Product), e.Redact(claim.Condition)
+		claim.Evidence = cleanStrings(claim.Evidence, e.Redact)
+		d.Applicability = &claim
 	}
 	d.MemoryUpdates = e.cleanMemoryUpdates(d.MemoryUpdates)
 	d.Actions = append([]protocol.Action(nil), d.Actions...)

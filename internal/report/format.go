@@ -34,7 +34,7 @@ func safeEvent(event protocol.Event, redact func(string) string) protocol.Event 
 	}{
 		{"source", 96}, {"status", 32}, {"assessment", 32}, {"phase", 32}, {"action_id", 96}, {"parent_action_id", 96}, {"mutates_source", 40},
 		{"advisory_id", 128}, {"advisory_title", 300}, {"run_id", 64}, {"version", 96}, {"stop_reason", 64}, {"terminal_reason", 96}, {"interruption_reason", 64},
-		{"check_outcome", 32}, {"verification_scope", 40}, {"assessment_scope", 32}, {"changed_scope", 40}, {"next_assessment", 40},
+		{"check_outcome", 32}, {"verification_scope", 40}, {"assessment_scope", 32}, {"applicability_status", 32}, {"changed_scope", 40}, {"next_assessment", 40}, {"health_scope", 40},
 		{"reason", 400}, {"error", 300}, {"follow_up", 1000},
 	} {
 		if value, ok := event.Details[field.key].(string); ok && value != "" {
@@ -53,7 +53,7 @@ func safeEvent(event protocol.Event, redact func(string) string) protocol.Event 
 	if value, ok := integer(event.Details["exit_code"]); ok {
 		out.Details["exit_code"] = value
 	}
-	for _, key := range []string{"attempt", "duration_ms"} {
+	for _, key := range []string{"attempt", "duration_ms", "failure_count"} {
 		if value, ok := integer(event.Details[key]); ok && value >= 0 {
 			out.Details[key] = value
 		}
@@ -177,7 +177,10 @@ func formatEvent(event protocol.Event) string {
 	if duration, ok := integer(event.Details["duration_ms"]); ok {
 		lines = append(lines, "Duration: "+strconv.FormatInt(duration, 10)+" ms")
 	}
-	for _, field := range []struct{ key, label string }{{"assessment", "Assessment"}, {"status", "Assessment status"}, {"assessment_scope", "Assessment scope"}, {"source", "Source"}, {"action_id", "Action"}, {"stop_reason", "Stop reason"}, {"interruption_reason", "Interruption"}, {"terminal_reason", "Completion reason"}, {"next_assessment", "Next assessment"}} {
+	if failures, ok := integer(event.Details["failure_count"]); ok {
+		lines = append(lines, "Consecutive unresolved assessments: "+strconv.FormatInt(failures, 10))
+	}
+	for _, field := range []struct{ key, label string }{{"assessment", "Assessment"}, {"status", "Assessment status"}, {"assessment_scope", "Assessment scope"}, {"applicability_status", "Advisory applicability"}, {"source", "Source"}, {"action_id", "Action"}, {"stop_reason", "Stop reason"}, {"interruption_reason", "Interruption"}, {"terminal_reason", "Completion reason"}, {"next_assessment", "Next assessment"}} {
 		if value, ok := event.Details[field.key].(string); ok && value != "" {
 			lines = append(lines, field.label+": "+value)
 		}

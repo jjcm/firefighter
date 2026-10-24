@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -141,8 +142,11 @@ func (c Config) Validate() error {
 	}
 	names := map[string]bool{}
 	for _, s := range c.Sources {
-		if s.Name == "" || names[s.Name] {
-			return errors.New("source names must be unique and nonempty")
+		if err := ValidateSourceName(s.Name); err != nil {
+			return err
+		}
+		if names[s.Name] {
+			return errors.New("source names must be unique")
 		}
 		names[s.Name] = true
 		if s.IntervalSeconds < 15 || s.LookbackHours < 0 {
@@ -177,4 +181,17 @@ func (c Config) Validate() error {
 	}
 	return c.Report.Validate()
 }
+
+// ValidateSourceName keeps external intake separate from internally generated
+// host reviews. The local-host identity carries a different execution scope.
+func ValidateSourceName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("source names must be nonempty")
+	}
+	if strings.EqualFold(strings.TrimSpace(name), "local-host") {
+		return errors.New("source name local-host is reserved for internal host reviews")
+	}
+	return nil
+}
+
 func Seconds(n int) time.Duration { return time.Duration(n) * time.Second }

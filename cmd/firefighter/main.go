@@ -161,6 +161,9 @@ func buildPlanner(c config.Config) (engine.Planner, error) {
 func buildSources(c config.Config) ([]engine.ScheduledSource, error) {
 	var result []engine.ScheduledSource
 	for _, s := range c.Sources {
+		if err := config.ValidateSourceName(s.Name); err != nil {
+			return nil, err
+		}
 		var source intel.Source
 		var err error
 		lookback := time.Duration(s.LookbackHours) * time.Hour

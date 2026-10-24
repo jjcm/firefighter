@@ -38,9 +38,19 @@ type MemoryUpdate struct {
 	TTLHours  int      `json:"ttl_hours"`
 }
 
+// Applicability records the model's evidence that a notice does or does not
+// apply locally. It is an observation claim, not independent verification.
+type Applicability struct {
+	Status    string   `json:"status"`
+	Product   string   `json:"product"`
+	Condition string   `json:"condition"`
+	Evidence  []string `json:"evidence"`
+}
+
 type Decision struct {
 	Summary       string         `json:"summary"`
 	Assessment    string         `json:"assessment"`
+	Applicability *Applicability `json:"applicability,omitempty"`
 	Evidence      []string       `json:"evidence"`
 	Actions       []Action       `json:"actions"`
 	Done          bool           `json:"done"`
@@ -56,15 +66,16 @@ type Turn struct {
 // Request contains untrusted observations, never higher-priority instructions.
 // RawMessage avoids coupling a planner to a particular inventory or source.
 type Request struct {
-	IncidentID      string              `json:"incident_id"`
-	Host            interface{}         `json:"host"`
-	Intel           interface{}         `json:"intel"`
-	History         []Turn              `json:"history"`
-	Memory          interface{}         `json:"memory,omitempty"`
-	Instructions    string              `json:"instructions"`
-	RotationHooks   map[string][]string `json:"rotation_hooks,omitempty"`
-	RecoveryNotes   []string            `json:"recovery_notes,omitempty"`
-	RoundsRemaining int                 `json:"rounds_remaining"`
+	IncidentID            string              `json:"incident_id"`
+	Host                  interface{}         `json:"host"`
+	Intel                 interface{}         `json:"intel"`
+	History               []Turn              `json:"history"`
+	Memory                interface{}         `json:"memory,omitempty"`
+	Instructions          string              `json:"instructions"`
+	RotationHooks         map[string][]string `json:"rotation_hooks,omitempty"`
+	RecoveryNotes         []string            `json:"recovery_notes,omitempty"`
+	RoundsRemaining       int                 `json:"rounds_remaining"`
+	ApplicabilityRequired bool                `json:"applicability_required"`
 }
 
 // Event is the stable outbound reporting contract. Raw command output stays local.

@@ -48,12 +48,12 @@ func TestAPIToRealPatchVerificationAndDurableCompletion(t *testing.T) {
 		turn := calls.Add(1)
 		var d protocol.Decision
 		if turn == 1 {
-			d = protocol.Decision{Summary: "Replace the vulnerable fixture setting", Assessment: "exposed", Evidence: []string{"Fixture advisory and installed configuration"}, Actions: []protocol.Action{{ID: "patch-config", Kind: "command", Argv: []string{"/bin/sh", "-c", `printf '%s' patched > "$1"`, "fixture", target}, Reason: "Patch temporary application configuration", Mutates: true, TimeoutSeconds: 5, Verify: []string{"/bin/sh", "-c", `test "$(cat "$1")" = patched`, "fixture", target}}}}
+			d = protocol.Decision{Summary: "Replace the vulnerable fixture setting", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Evidence: []string{"Fixture advisory and installed configuration"}, Actions: []protocol.Action{{ID: "patch-config", Kind: "command", Argv: []string{"/bin/sh", "-c", `printf '%s' patched > "$1"`, "fixture", target}, Reason: "Patch temporary application configuration", Mutates: true, TimeoutSeconds: 5, Verify: []string{"/bin/sh", "-c", `test "$(cat "$1")" = patched`, "fixture", target}}}}
 		} else {
 			if len(request.Messages) < 2 || !strings.Contains(request.Messages[1].Content, "patch-config-verify") {
 				t.Error("planner did not receive verification evidence")
 			}
-			d = protocol.Decision{Summary: "Fixture patched and verified; no claim about overall compromise", Assessment: "remediated", Evidence: []string{"patch-config-verify exited 0"}, Actions: []protocol.Action{}, Done: true}
+			d = protocol.Decision{Summary: "Fixture patched and verified; no claim about overall compromise", Assessment: "remediated", Applicability: affectedFixtureApplicability(), Evidence: []string{"patch-config-verify exited 0"}, Actions: []protocol.Action{}, Done: true}
 		}
 		content, _ := json.Marshal(d)
 		json.NewEncoder(w).Encode(map[string]interface{}{"choices": []interface{}{map[string]interface{}{"finish_reason": "stop", "message": map[string]interface{}{"content": string(content)}}}})

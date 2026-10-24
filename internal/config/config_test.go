@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,25 @@ func TestBroadcastSourceRequiresPublisherPinAndAbsoluteCA(t *testing.T) {
 		c.Sources = []Source{bad}
 		if err := c.Validate(); err == nil {
 			t.Fatalf("invalid broadcast configuration accepted: %+v", bad)
+		}
+	}
+}
+
+func TestExternalSourcesCannotUseInternalHostReviewName(t *testing.T) {
+	for _, sourceType := range []string{"rss", "broadcast", "kev", "nvd", "x"} {
+		for _, name := range []string{"local-host", "LOCAL-HOST", " local-host\t"} {
+			t.Run(sourceType+"/"+name, func(t *testing.T) {
+				c := Default()
+				c.Sources = []Source{{Name: name, Type: sourceType, IntervalSeconds: 60}}
+				if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "reserved for internal host reviews") {
+					t.Fatalf("reserved source identity was accepted or failed for unrelated reasons: %v", err)
+				}
+			})
+		}
+	}
+	for _, name := range []string{"ubuntu-usn", "firefighter-central", "local-host-advisories"} {
+		if err := ValidateSourceName(name); err != nil {
+			t.Fatalf("ordinary external source name %q rejected: %v", name, err)
 		}
 	}
 }

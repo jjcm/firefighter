@@ -70,7 +70,11 @@ func TestMemorySharesInventoryAndNotesAcrossIncidents(t *testing.T) {
 					if !done {
 						assessment = "unknown"
 					}
-					return protocol.Decision{Done: done, Assessment: assessment, Summary: "Observed fixture package", MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("fixture-package", "Observed package 1.2.3; recheck before remediation")}}, nil
+					decision := protocol.Decision{Done: done, Assessment: assessment, Summary: "Observed fixture package", MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("fixture-package", "Observed package 1.2.3; recheck before remediation")}}
+					if assessment == "not_affected" {
+						decision.Applicability = notAffectedFixtureApplicability()
+					}
+					return decision, nil
 				}
 				if !mem.Inventory.Cached || len(mem.Notes) != 1 || mem.Notes[0].Key != "fixture-package" || mem.Notes[0].IncidentID != first.ID {
 					t.Fatalf("second incident lost shared evidence/provenance: %+v", mem)
@@ -78,7 +82,7 @@ func TestMemorySharesInventoryAndNotesAcrossIncidents(t *testing.T) {
 				if len(mem.PreviousIncidents) != 1 || mem.PreviousIncidents[0].IncidentID != first.ID {
 					t.Fatalf("second incident lacks prior conclusion: %+v", mem.PreviousIncidents)
 				}
-				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Rechecked fixture", MemoryUpdates: []protocol.MemoryUpdate{{Operation: "delete", Key: "fixture-package"}}}, nil
+				return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Rechecked fixture", MemoryUpdates: []protocol.MemoryUpdate{{Operation: "delete", Key: "fixture-package"}}}, nil
 			})
 			processMemoryIncident(t, e)
 			saved := readState(t, dir)
@@ -103,7 +107,7 @@ func TestMemoryRestartRetainsNotesButRefreshesInventory(t *testing.T) {
 	addIncident(e, "pending")
 	e.Collect = func(context.Context) (host.Snapshot, error) { return memorySnapshot("before-restart"), nil }
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Save observation", MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("durable-note", "Previously observed fixture package")}}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Save observation", MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("durable-note", "Previously observed fixture package")}}, nil
 	})
 	processMemoryIncident(t, e)
 	if err := e.Store.Close(); err != nil {
@@ -128,7 +132,7 @@ func TestMemoryRestartRetainsNotesButRefreshesInventory(t *testing.T) {
 		if snapshot.Packages[0].Version != "after-restart" || mem.Inventory.Cached || mem.Inventory.Stale || len(mem.Notes) != 1 || mem.Notes[0].Key != "durable-note" {
 			t.Fatalf("restart context incorrect: snapshot=%+v memory=%+v", snapshot, mem)
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Reviewed after restart"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Reviewed after restart"}, nil
 	})
 	scheduledIncident(restarted, "after-restart", "pending", time.Now().UTC())
 	processMemoryIncident(t, restarted)
@@ -191,12 +195,16 @@ func TestMemoryInvalidatesDurablyBeforeEveryExecutedCommand(t *testing.T) {
 						action.Verify = []string{"/bin/false"}
 						action.Rollback = []string{"/bin/true"}
 					}
-					return protocol.Decision{Assessment: "unknown", Summary: "Investigate fixture", Actions: []protocol.Action{action}}, nil
+					decision := protocol.Decision{Assessment: "unknown", Summary: "Investigate fixture", Actions: []protocol.Action{action}}
+					if tc.mutates {
+						decision.Applicability = affectedFixtureApplicability()
+					}
+					return decision, nil
 				}
 				if snapshot.Packages[0].Version != "after" || mem.Inventory.Cached || mem.Inventory.Stale || collections != 2 {
 					t.Fatalf("next model round reused pre-command inventory: snapshot=%+v metadata=%+v collections=%d", snapshot, mem.Inventory, collections)
 				}
-				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Current version inspected"}, nil
+				return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Current version inspected"}, nil
 			})
 			processMemoryIncident(t, e)
 			if !reflect.DeepEqual(runner.calls, tc.calls) || rounds != 2 {
@@ -222,7 +230,7 @@ func TestMemoryCacheAndNotesExpireBeforeNextIncident(t *testing.T) {
 		if snapshot.Packages[0].Version != "fresh" || mem.Inventory.Cached || mem.Inventory.Stale || len(mem.Notes) != 1 || mem.Notes[0].Key != "current" {
 			t.Fatalf("expired memory reached planner: snapshot=%+v memory=%+v", snapshot, mem)
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Expiry checked"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Expiry checked"}, nil
 	})
 	addIncident(e, "pending")
 	processMemoryIncident(t, e)
@@ -259,7 +267,7 @@ func TestMemoryFailedRefreshIsExplicitAndRetried(t *testing.T) {
 				} else if mem.Inventory.Stale || mem.Inventory.Cached || mem.Inventory.RefreshError != "" || snapshot.Packages[0].Version != "recovered-version" {
 					t.Fatalf("failed collection poisoned later cache: snapshot=%+v metadata=%+v", snapshot, mem.Inventory)
 				}
-				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture assessment only"}, nil
+				return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Fixture assessment only"}, nil
 			})
 			addIncident(e, "pending")
 			processMemoryIncident(t, e)
@@ -288,7 +296,7 @@ func TestMemoryPeriodicHostReviewsForceNewInventory(t *testing.T) {
 		if mem.Inventory.Cached || mem.Inventory.Stale || snapshot.Packages[0].Version != fmt.Sprintf("review-%d", collections) {
 			t.Fatalf("posture review trusted preceding cache: snapshot=%+v metadata=%+v", snapshot, mem.Inventory)
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Posture review complete"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Posture review complete"}, nil
 	})
 	for i := 0; i < 2; i++ {
 		e.State.LastHostReview = time.Now().Add(-config.Seconds(e.Config.InventorySeconds) - time.Second)
@@ -321,6 +329,11 @@ func TestMemoryRejectsInvalidAndUnverifiedUpdates(t *testing.T) {
 					update.TTLHours = 0
 				}
 				d := protocol.Decision{Done: true, Assessment: tc.assessment, Summary: "Premature conclusion", MemoryUpdates: []protocol.MemoryUpdate{update}}
+				if tc.action || tc.assessment == "remediated" {
+					d.Applicability = affectedFixtureApplicability()
+				} else if tc.assessment == "not_affected" {
+					d.Applicability = notAffectedFixtureApplicability()
+				}
 				if tc.action {
 					d.Done = false
 					d.Actions = []protocol.Action{{ID: "not-yet-executed", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Reason: "Potential change", Mutates: true}}
@@ -366,7 +379,7 @@ func TestMemoryMixedDecisionRunsActionsAndReconsidersNotesAfterResults(t *testin
 		rounds++
 		var d protocol.Decision
 		if rounds == 1 {
-			d = protocol.Decision{Summary: "Update fixture package", Assessment: "exposed", Evidence: []string{}, Actions: []protocol.Action{{ID: "fix", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Apply fixture fix"}}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("premature", premature), {Operation: "delete", Key: "existing", Evidence: []string{}, Tags: []string{}}}}
+			d = protocol.Decision{Summary: "Update fixture package", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Evidence: []string{}, Actions: []protocol.Action{{ID: "fix", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Apply fixture fix"}}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("premature", premature), {Operation: "delete", Key: "existing", Evidence: []string{}, Tags: []string{}}}}
 		} else {
 			checkDiscarded()
 			if len(req.RecoveryNotes) != 1 || req.RecoveryNotes[0] != discardedMemoryUpdateNote {
@@ -379,7 +392,7 @@ func TestMemoryMixedDecisionRunsActionsAndReconsidersNotesAfterResults(t *testin
 			if err != nil || strings.Contains(string(encoded), premature) {
 				t.Fatalf("discarded note entered the next model request: %v", err)
 			}
-			d = protocol.Decision{Summary: "Observed successful fixture fix and verification", Assessment: "remediated", Done: true, Evidence: []string{}, Actions: []protocol.Action{}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("observed", "Fixture fix passed its verification")}}
+			d = protocol.Decision{Summary: "Observed successful fixture fix and verification", Assessment: "remediated", Applicability: affectedFixtureApplicability(), Done: true, Evidence: []string{}, Actions: []protocol.Action{}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("observed", "Fixture fix passed its verification")}}
 		}
 		// Exercise the actual parser boundary that previously rejected this reply.
 		b, err := json.Marshal(d)
@@ -427,7 +440,7 @@ func TestMemoryMixedDecisionObserveModeDiscardsNotesWithoutExecution(t *testing.
 	e.Config.Observe = true
 	in := addIncident(e, "pending")
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
-		return protocol.Decision{Summary: "Propose fixture fix", Assessment: "exposed", Actions: []protocol.Action{{ID: "fix", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Fix fixture"}}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("premature", "Planned fix succeeded")}}, nil
+		return protocol.Decision{Summary: "Propose fixture fix", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Actions: []protocol.Action{{ID: "fix", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Fix fixture"}}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("premature", "Planned fix succeeded")}}, nil
 	})
 	processMemoryIncident(t, e)
 	saved := readState(t, dir)
@@ -514,9 +527,9 @@ func TestMemoryRedactsInventoryAndNotesBeforePersistenceAndRetrieval(t *testing.
 		if rounds == 1 {
 			update := memoryUpdate("secret-bearing-note", "Observed "+secret)
 			update.Evidence, update.Tags = []string{"Evidence " + secret}, []string{secret}
-			return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "First assessment", MemoryUpdates: []protocol.MemoryUpdate{update}}, nil
+			return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "First assessment", MemoryUpdates: []protocol.MemoryUpdate{update}}, nil
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Second assessment"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Second assessment"}, nil
 	})
 	addIncident(e, "pending")
 	processMemoryIncident(t, e)
@@ -585,7 +598,7 @@ func TestMemoryPreviousIncidentsAreRelevantBoundedAndExcludeUnassessedWork(t *te
 				}
 			}
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Context bounded"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Context bounded"}, nil
 	})
 	processMemoryIncident(t, e)
 }
@@ -604,10 +617,10 @@ func TestMemoryRejectedRemediationRetainsFailureWithoutPromotingClaim(t *testing
 	e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
 		rounds++
 		if rounds == 1 {
-			return protocol.Decision{Assessment: "exposed", Summary: "Attempt a fix", Actions: []protocol.Action{{ID: actionID, Kind: "command", Argv: []string{"/bin/false"}, Mutates: true, Reason: "Fixture fix"}}}, nil
+			return protocol.Decision{Assessment: "exposed", Applicability: affectedFixtureApplicability(), Summary: "Attempt a fix", Actions: []protocol.Action{{ID: actionID, Kind: "command", Argv: []string{"/bin/false"}, Mutates: true, Reason: "Fixture fix"}}}, nil
 		}
 		if rounds == 2 {
-			return protocol.Decision{Done: true, Assessment: "remediated", Summary: "Incorrect claim after failed fix", MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("false-fix", "The fixture was fixed")}}, nil
+			return protocol.Decision{Done: true, Assessment: "remediated", Applicability: affectedFixtureApplicability(), Summary: "Incorrect claim after failed fix", MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("false-fix", "The fixture was fixed")}}, nil
 		}
 		_, mem := memoryRequest(t, req)
 		if len(mem.PreviousIncidents) != 1 {
@@ -634,7 +647,7 @@ func TestMemoryRejectedRemediationRetainsFailureWithoutPromotingClaim(t *testing
 		if len(mem.Notes) != 0 {
 			t.Fatalf("rejected fix created a durable note: %+v", mem.Notes)
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Follow-up evidence assessed"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Follow-up evidence assessed"}, nil
 	})
 	processMemoryIncident(t, e)
 	saved := readState(t, dir).Incidents[first.ID]
@@ -674,7 +687,7 @@ func TestMemoryPreviousActionResultsKeepOnlyLatestBoundedMetadata(t *testing.T) 
 		if strings.Contains(string(encoded), "raw evidence stays in audit") {
 			t.Fatal("result summary retained raw output")
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Reviewed bounded action metadata"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Reviewed bounded action metadata"}, nil
 	})
 	processMemoryIncident(t, e)
 }
@@ -690,7 +703,7 @@ func TestMemoryRedactionExpansionKeepsValidNotesAndDropsOnlyInvalidKey(t *testin
 		expanding.Evidence, expanding.Tags = []string{secret}, []string{secret}
 		invalidKey := memoryUpdate(secret+"-key", "This key will no longer be a valid identifier")
 		unrelated := memoryUpdate("ordinary-note", "Unrelated observed fact")
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Record redacted evidence", MemoryUpdates: []protocol.MemoryUpdate{expanding, invalidKey, unrelated}}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Record redacted evidence", MemoryUpdates: []protocol.MemoryUpdate{expanding, invalidKey, unrelated}}, nil
 	})
 	addIncident(e, "pending")
 	processMemoryIncident(t, e)
@@ -746,7 +759,7 @@ func TestMemoryPlannerCannotMutateFreshOrCachedInventoryThroughRequest(t *testin
 				t.Fatalf("planner mutated %s through request fields", name)
 			}
 		}
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Request isolated"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Request isolated"}, nil
 	})
 	addIncident(e, "pending")
 	processMemoryIncident(t, e)

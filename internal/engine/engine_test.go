@@ -54,6 +54,26 @@ func (r *fakeRunner) called() []string {
 	return append([]string(nil), r.calls...)
 }
 
+// affectedFixtureApplicability supplies the explicit local proof used by tests
+// that exercise remediation after advisory applicability has been established.
+func affectedFixtureApplicability() *protocol.Applicability {
+	return &protocol.Applicability{
+		Status: "affected", Product: "fixture",
+		Condition: "observed vulnerable fixture version/configuration",
+		Evidence:  []string{"current inventory/result fixture proof"},
+	}
+}
+
+// notAffectedFixtureApplicability supplies scoped local evidence that excludes
+// the advisory's vulnerable condition for tests completing irrelevant notices.
+func notAffectedFixtureApplicability() *protocol.Applicability {
+	return &protocol.Applicability{
+		Status: "not_affected", Product: "fixture",
+		Condition: "observed fixture version/configuration is outside the advisory affected range",
+		Evidence:  []string{"current inventory/result fixture excludes the vulnerable condition"},
+	}
+}
+
 func fixtureEngine(t *testing.T) (*Engine, string, *fakeRunner) {
 	t.Helper()
 	dir := t.TempDir()
@@ -71,7 +91,7 @@ func fixtureEngine(t *testing.T) (*Engine, string, *fakeRunner) {
 		Collect: func(context.Context) (host.Snapshot, error) { return host.Snapshot{}, nil },
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Planner: plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
-			return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture assessment complete"}, nil
+			return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Fixture assessment complete"}, nil
 		}),
 	}
 	e.defaults()
@@ -119,7 +139,7 @@ func TestKnownExposureDeferredIncidentResumesBeforeFreshDisclosure(t *testing.T)
 			var selected string
 			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
 				selected = req.IncidentID
-				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+				return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Fixture complete"}, nil
 			})
 			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked {
 				t.Fatalf("resume failed: worked=%v err=%v", worked, err)
@@ -147,7 +167,7 @@ func TestUrgentDeferredIncidentStillWaitsForNextAttempt(t *testing.T) {
 			var selected string
 			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
 				selected = req.IncidentID
-				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+				return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Fixture complete"}, nil
 			})
 			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked || selected != fresh.ID {
 				t.Fatalf("future retry bypassed due-time gate: selected=%q worked=%v err=%v", selected, worked, err)
@@ -170,7 +190,7 @@ func TestUrgentDeferredResumePreservesOldestFairnessAndTerminalExclusion(t *test
 	var selected []string
 	e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
 		selected = append(selected, req.IncidentID)
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Fixture complete"}, nil
 	})
 	for i := 0; i < 3; i++ {
 		if worked, err := e.ProcessOne(context.Background()); err != nil || !worked {
@@ -195,7 +215,7 @@ func TestDeferredPriorityUsesLatestAssessment(t *testing.T) {
 			var selected string
 			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
 				selected = req.IncidentID
-				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+				return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Fixture complete"}, nil
 			})
 			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked || selected != fresh.ID {
 				t.Fatalf("historical exposure overrode latest assessment: selected=%q worked=%v err=%v", selected, worked, err)
@@ -254,7 +274,7 @@ func TestFeedIngestionContinuesWhilePlannerIsBlocked(t *testing.T) {
 		close(entered)
 		select {
 		case <-release:
-			return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Done"}, nil
+			return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Done"}, nil
 		case <-ctx.Done():
 			return protocol.Decision{}, ctx.Err()
 		}
@@ -336,7 +356,7 @@ func TestObserveModeExecutesNoPlannedCommands(t *testing.T) {
 	e.Config.Observe = true
 	in := addIncident(e, "pending")
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
-		return protocol.Decision{Assessment: "exposed", Summary: "Would repair the fixture", Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Repair"}}}, nil
+		return protocol.Decision{Assessment: "exposed", Applicability: affectedFixtureApplicability(), Summary: "Would repair the fixture", Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Repair"}}}, nil
 	})
 	if _, err := e.ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)
@@ -357,7 +377,7 @@ func TestVerificationFailureRollsBackAndSkipsRemainingBatch(t *testing.T) {
 	e.Planner = plannerFunc(func(_ context.Context, request protocol.Request) (protocol.Decision, error) {
 		rounds++
 		if rounds == 1 {
-			return protocol.Decision{Assessment: "exposed", Summary: "Repair fixture", Actions: []protocol.Action{
+			return protocol.Decision{Assessment: "exposed", Applicability: affectedFixtureApplicability(), Summary: "Repair fixture", Actions: []protocol.Action{
 				{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/false"}, Rollback: []string{"/bin/true"}, Mutates: true, Reason: "Repair"},
 				{ID: "must-not-run", Kind: "command", Argv: []string{"/bin/true"}, Reason: "Dependent operation"},
 			}}, nil
@@ -384,12 +404,12 @@ func TestLaterFailureInvalidatesEarlierVerification(t *testing.T) {
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
 		rounds++
 		if rounds == 1 {
-			return protocol.Decision{Assessment: "exposed", Summary: "Repair two components", Actions: []protocol.Action{
+			return protocol.Decision{Assessment: "exposed", Applicability: affectedFixtureApplicability(), Summary: "Repair two components", Actions: []protocol.Action{
 				{ID: "first-patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "First repair"},
 				{ID: "second-patch", Kind: "command", Argv: []string{"/bin/false"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Second repair"},
 			}}, nil
 		}
-		return protocol.Decision{Done: true, Assessment: "remediated", Summary: "Incorrect claim after failed second repair"}, nil
+		return protocol.Decision{Done: true, Assessment: "remediated", Applicability: affectedFixtureApplicability(), Summary: "Incorrect claim after failed second repair"}, nil
 	})
 	if _, err := e.ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)
@@ -431,7 +451,7 @@ func TestInvalidVerificationPreventsOriginalMutation(t *testing.T) {
 	e, _, runner := fixtureEngine(t)
 	in := addIncident(e, "pending")
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
-		return protocol.Decision{Assessment: "exposed", Summary: "Invalid proposed repair", Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"./untrusted-relative-check"}, Mutates: true, Reason: "Repair"}}}, nil
+		return protocol.Decision{Assessment: "exposed", Applicability: affectedFixtureApplicability(), Summary: "Invalid proposed repair", Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"./untrusted-relative-check"}, Mutates: true, Reason: "Repair"}}}, nil
 	})
 	if _, err := e.ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)
@@ -571,7 +591,7 @@ func TestEveryFifthAssessmentServicesOldestDueWorkUnderFreshTraffic(t *testing.T
 	var selected []string
 	e.Planner = plannerFunc(func(_ context.Context, request protocol.Request) (protocol.Decision, error) {
 		selected = append(selected, request.IncidentID)
-		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture checked"}, nil
+		return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Fixture checked"}, nil
 	})
 	for i := 0; i < 10; i++ {
 		// There is always another newly published pending post competing with
@@ -606,13 +626,19 @@ func TestTerminalAdvisoriesStayCompletedWhileHostReviewsContinue(t *testing.T) {
 				}
 				if item.Source == "local-host" {
 					hostReviews++
-					return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Periodic posture reviewed"}, nil
+					return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Periodic posture reviewed"}, nil
 				}
 				advisoryRounds++
 				if assessment == "remediated" && advisoryRounds == 1 {
-					return protocol.Decision{Assessment: "exposed", Summary: "Repair fixture", Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Repair and verify"}}}, nil
+					return protocol.Decision{Assessment: "exposed", Applicability: affectedFixtureApplicability(), Summary: "Repair fixture", Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Repair and verify"}}}, nil
 				}
-				return protocol.Decision{Done: true, Assessment: assessment, Summary: "Terminal advisory assessment"}, nil
+				decision := protocol.Decision{Done: true, Assessment: assessment, Summary: "Terminal advisory assessment"}
+				if assessment == "remediated" {
+					decision.Applicability = affectedFixtureApplicability()
+				} else {
+					decision.Applicability = notAffectedFixtureApplicability()
+				}
+				return decision, nil
 			})
 			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked {
 				t.Fatalf("initial assessment failed: worked=%v err=%v", worked, err)
@@ -670,7 +696,7 @@ func TestPlannerRetryReceivesPreviousFailureAndExecutionLimits(t *testing.T) {
 						t.Errorf("planner instructions omit %q: %q", required, request.Instructions)
 					}
 				}
-				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Retry succeeded"}, nil
+				return protocol.Decision{Done: true, Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Summary: "Retry succeeded"}, nil
 			})
 			if _, err := e.ProcessOne(context.Background()); err != nil {
 				t.Fatal(err)

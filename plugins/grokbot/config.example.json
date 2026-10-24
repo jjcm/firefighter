@@ -5,5 +5,5 @@
   "routine_token_env": "GROKBOT_ROUTINE_TOKEN",
   "state_path": "/var/lib/firefighter-grokbot/delivered.json",
   "timeout_seconds": 15,
-  "include_types": ["started", "source_error", "source_recovered", "assessment_finished"]
+  "include_types": ["started", "source_error", "source_recovered", "assessment_health_error", "assessment_health_recovered", "assessment_finished"]
 }

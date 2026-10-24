@@ -162,15 +162,19 @@ func validBearer(value string) bool {
 // ShouldSend selects operational changes and actionable assessments. The full
 // event history still belongs in the local audit, including filtered events.
 func (s *directSender) ShouldSend(event protocol.Event) bool {
+	if QuietAdvisory(event) {
+		return false
+	}
 	source, _ := event.Details["source"].(string)
 	phase, _ := event.Details["phase"].(string)
 	changed, _ := event.Details["changed"].(bool)
+	changedThisAttempt, _ := event.Details["changed_this_attempt"].(bool)
 	mutates, _ := event.Details["mutates"].(bool)
 	status, _ := event.Details["status"].(string)
 	problem, _ := event.Details["error"].(string)
 	assessment, _ := event.Details["assessment"].(string)
 	switch event.Type {
-	case "started", "stopped", "report_test", "source_error", "source_recovered":
+	case "started", "stopped", "report_test", "source_error", "source_recovered", "assessment_health_error", "assessment_health_recovered":
 		return true
 	case "assessment_started":
 		return source == "local-host"
@@ -184,7 +188,8 @@ func (s *directSender) ShouldSend(event protocol.Event) bool {
 			return true
 		}
 		// A passing inventory/probe check is not a remediation update. Its
-		// assessment remains in the local audit; failures still need a report.
+		// assessment remains in the local audit. For affected advisories and
+		// host audits, failures still need a report.
 		if phase == "verification" {
 			parentMutates, parentKnown := event.Details["parent_mutates"].(bool)
 			verified, _ := event.Details["verified"].(bool)
@@ -196,7 +201,7 @@ func (s *directSender) ShouldSend(event protocol.Event) bool {
 		return mutates || phase == "verification" || phase == "rollback"
 	case "assessment_finished":
 		reported, _ := event.Details["had_reported_activity"].(bool)
-		if source == "local-host" || changed || reported || status == "deferred" || problem != "" {
+		if source == "local-host" || changed || changedThisAttempt || reported || status == "deferred" || problem != "" {
 			return true
 		}
 		switch assessment {

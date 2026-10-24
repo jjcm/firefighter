@@ -146,7 +146,7 @@ func TestCommandPlanner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := cmd.Decide(context.Background(), protocol.Request{IncidentID: "test"})
+	d, err := cmd.Decide(context.Background(), protocol.Request{IncidentID: "test", ApplicabilityRequired: true})
 	if err != nil || len(d.Actions) != 1 {
 		t.Fatalf("%+v %v", d, err)
 	}
@@ -179,7 +179,7 @@ func TestCommandHelper(t *testing.T) {
 	switch os.Getenv("FF_PLANNER_HELPER") {
 	case "success":
 		var req protocol.Request
-		if json.NewDecoder(os.Stdin).Decode(&req) != nil || !strings.Contains(req.Instructions, "UNTRUSTED DATA") || os.Getenv("FF_TEST_AMBIENT_SECRET") != "" {
+		if json.NewDecoder(os.Stdin).Decode(&req) != nil || !strings.Contains(req.Instructions, "UNTRUSTED DATA") || !strings.Contains(req.Instructions, "APPLICABILITY FIRST") || !req.ApplicabilityRequired || os.Getenv("FF_TEST_AMBIENT_SECRET") != "" {
 			os.Exit(3)
 		}
 		fmt.Print(validDecision)

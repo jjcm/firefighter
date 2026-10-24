@@ -11,7 +11,7 @@ import (
 	"github.com/jjcm/firefighter/internal/report"
 )
 
-func TestFailedObservationCheckReplansAndReportsClosure(t *testing.T) {
+func TestFailedObservationCheckOnAffectedHostReplansAndReportsClosure(t *testing.T) {
 	e, _, runner := fixtureEngine(t)
 	in := addIncident(e, "pending")
 	in.Item.CVEs = []string{"CVE-2026-12345"}
@@ -27,7 +27,7 @@ func TestFailedObservationCheckReplansAndReportsClosure(t *testing.T) {
 	e.Planner = plannerFunc(func(_ context.Context, request protocol.Request) (protocol.Decision, error) {
 		round++
 		if round == 1 {
-			return protocol.Decision{Summary: "Inspect product", Assessment: "unknown", Actions: []protocol.Action{
+			return protocol.Decision{Summary: "Inspect affected product", Assessment: "unknown", Applicability: affectedFixtureApplicability(), Actions: []protocol.Action{
 				{ID: "presence", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/false"}, Reason: "Inspect deployment directories"},
 				{ID: "must-replan", Kind: "command", Argv: []string{"/bin/true"}, Reason: "Dependent check"},
 			}}, nil
@@ -35,7 +35,7 @@ func TestFailedObservationCheckReplansAndReportsClosure(t *testing.T) {
 		if len(request.History) != 1 || len(request.History[0].Results) != 2 || request.History[0].Results[1].ExitCode != 1 {
 			t.Fatalf("failed check not supplied for interpretation: %+v", request.History)
 		}
-		return protocol.Decision{Summary: "Product absent in independently established coverage; missing directory explained", Assessment: "not_affected", Done: true}, nil
+		return protocol.Decision{Summary: "Product absent in independently established coverage; missing directory explained", Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Done: true}, nil
 	})
 	if _, err := e.ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)
@@ -82,9 +82,9 @@ func TestRetryReportsChangesFromThisAttemptSeparately(t *testing.T) {
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
 		round++
 		if round == 1 {
-			return protocol.Decision{Summary: "Contain exposure", Assessment: "exposed", Actions: []protocol.Action{{ID: "contain", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Reason: "Contain exposure", Mutates: true}}}, nil
+			return protocol.Decision{Summary: "Contain exposure", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Actions: []protocol.Action{{ID: "contain", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Reason: "Contain exposure", Mutates: true}}}, nil
 		}
-		return protocol.Decision{Summary: "Residual exposure remains", Assessment: "exposed", Done: true}, nil
+		return protocol.Decision{Summary: "Residual exposure remains", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Done: true}, nil
 	})
 	if _, err := e.ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)
@@ -115,6 +115,9 @@ func TestRetryReportsChangesFromThisAttemptSeparately(t *testing.T) {
 func TestPlannerDeferralGetsRecoveryClosureWithoutActions(t *testing.T) {
 	e, _, _ := fixtureEngine(t)
 	in := addIncident(e, "pending")
+	// The recovery closes an incident already visible in the monitoring channel.
+	in.ReportedActivity = true
+
 	sender, err := report.NewSender(report.Options{Type: "grokbot", URL: "https://example.test/routine", BearerToken: strings.Repeat("b", 32)})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +129,7 @@ func TestPlannerDeferralGetsRecoveryClosureWithoutActions(t *testing.T) {
 			first = false
 			return protocol.Decision{}, errors.New("provider unavailable")
 		}
-		return protocol.Decision{Summary: "Previous evidence rules out this advisory", Assessment: "not_affected", Done: true}, nil
+		return protocol.Decision{Summary: "Previous evidence rules out this advisory", Assessment: "not_affected", Applicability: notAffectedFixtureApplicability(), Done: true}, nil
 	})
 	for i := 0; i < 2; i++ {
 		in.NextAttempt = time.Now().Add(-time.Second)
@@ -148,7 +151,7 @@ func TestRollbackAfterObservationCountsAsChangeAttempt(t *testing.T) {
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
 		round++
 		if round == 1 {
-			return protocol.Decision{Summary: "Check deployment", Assessment: "unknown", Actions: []protocol.Action{{ID: "probe", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/false"}, Rollback: []string{"/bin/true"}, Reason: "Check deployment"}}}, nil
+			return protocol.Decision{Summary: "Check affected deployment", Assessment: "unknown", Applicability: affectedFixtureApplicability(), Actions: []protocol.Action{{ID: "probe", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/false"}, Rollback: []string{"/bin/true"}, Reason: "Check deployment"}}}, nil
 		}
 		return protocol.Decision{Summary: "Replan after recovery", Assessment: "unknown", Done: true}, nil
 	})
@@ -170,13 +173,13 @@ func TestCurrentAttemptChangeSurvivesHistoryCompaction(t *testing.T) {
 	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
 		round++
 		if round == 19 {
-			return protocol.Decision{Summary: "Assessment complete with residual exposure", Assessment: "exposed", Done: true}, nil
+			return protocol.Decision{Summary: "Assessment complete with residual exposure", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Done: true}, nil
 		}
 		action := protocol.Action{ID: "inspect", Kind: "command", Argv: []string{"/bin/true"}, Reason: "Inspect state"}
 		if round == 1 {
 			action.ID, action.Mutates, action.Verify = "patch", true, []string{"/bin/true"}
 		}
-		return protocol.Decision{Summary: "Work through evidence", Assessment: "exposed", Actions: []protocol.Action{action}}, nil
+		return protocol.Decision{Summary: "Work through evidence", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Actions: []protocol.Action{action}}, nil
 	})
 	if _, err := e.ProcessOne(context.Background()); err != nil {
 		t.Fatal(err)

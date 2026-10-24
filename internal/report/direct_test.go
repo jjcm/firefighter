@@ -130,7 +130,7 @@ func TestDirectProvidersNativePayloadAndAcknowledgement(t *testing.T) {
 func TestDirectGrokStructuredContextAndBoundedEvidence(t *testing.T) {
 	s := directFixture(t, "grokbot")
 	event := protocol.Event{ID: "event-context", IncidentID: "incident-context", Type: "assessment_finished", Host: "fixture-host", Summary: "No applicable software found", Details: map[string]any{
-		"status": "completed", "assessment": "not_affected", "assessment_scope": "advisory", "had_reported_activity": true,
+		"status": "completed", "assessment": "not_affected", "assessment_scope": "advisory", "applicability_status": "not_affected", "had_reported_activity": true,
 		"run_id": "run-456", "version": "revision-456", "attempt": 2,
 		"advisory_id": "notice-456", "advisory_title": "Advisory " + strings.Repeat("🙂", 200), "cves": []string{"CVE-2026-12345"},
 		"remediation_verified": false, "changed": true, "changed_this_attempt": false, "changed_scope": "retained_incident_history",
@@ -153,7 +153,7 @@ func TestDirectGrokStructuredContextAndBoundedEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 		details := payload.Event.Details
-		if payload.Event.ID != event.ID || details["run_id"] != "run-456" || details["advisory_id"] != "notice-456" || details["attempt"] != float64(2) || details["remediation_verified"] != false || details["had_reported_activity"] != true || details["assessment_scope"] != "advisory" || len(details["cves"].([]any)) != 1 || details["clipped_fields"] == nil {
+		if payload.Event.ID != event.ID || details["run_id"] != "run-456" || details["advisory_id"] != "notice-456" || details["attempt"] != float64(2) || details["remediation_verified"] != false || details["had_reported_activity"] != true || details["assessment_scope"] != "advisory" || details["applicability_status"] != "not_affected" || len(details["cves"].([]any)) != 1 || details["clipped_fields"] == nil {
 			t.Fatalf("wire context is incomplete: %+v", details)
 		}
 		for _, forbidden := range []string{"private-fixture-value", "raw-output-must-stay-local", "raw-env-must-stay-local"} {
@@ -237,6 +237,7 @@ func TestDirectEventFilterAndHistoricalOutboxSuppression(t *testing.T) {
 		want    bool
 	}{
 		{"started", nil, true}, {"stopped", nil, true}, {"report_test", nil, true}, {"source_error", nil, true}, {"source_recovered", nil, true},
+		{"assessment_health_error", map[string]any{"failure_count": 3}, true}, {"assessment_health_recovered", map[string]any{"failure_count": 3}, true},
 		{"assessment_started", map[string]any{"source": "local-host"}, true}, {"assessment_started", map[string]any{"source": "nvd"}, false},
 		{"assessment_finished", map[string]any{"source": "local-host", "assessment": "not_affected"}, true},
 		{"assessment_finished", map[string]any{"changed": true}, true}, {"assessment_finished", map[string]any{"status": "deferred"}, true}, {"assessment_finished", map[string]any{"error": "failed"}, true},

@@ -28,14 +28,28 @@ func TestReportContextRetainsIdentityAndSeparatesCheckFromRemediation(t *testing
 		t.Fatal("successful probe became a remediation claim or lost its scope")
 	}
 	assessment := safeEvent(protocol.Event{Type: "assessment_finished", Details: map[string]any{
-		"assessment": "exposed", "status": "completed", "remediation_verified": false,
+		"assessment": "exposed", "status": "completed", "applicability_status": "affected", "remediation_verified": false,
 		"changed": true, "changed_this_attempt": false, "changed_scope": "retained_incident_history",
 		"terminal_reason": "assessment_complete", "next_assessment": "2026-10-24T14:00:00Z",
 	}}, Redactor())
 	message = formatEvent(assessment)
-	for _, expected := range []string{"Assessment: exposed", "Assessment status: completed", "Remediation verified: false", "Change commands run this attempt: false", "Change commands run in retained incident history: true", "Completion reason: assessment_complete", "Next assessment: 2026-10-24T14:00:00Z"} {
+	for _, expected := range []string{"Assessment: exposed", "Assessment status: completed", "Advisory applicability: affected", "Remediation verified: false", "Change commands run this attempt: false", "Change commands run in retained incident history: true", "Completion reason: assessment_complete", "Next assessment: 2026-10-24T14:00:00Z"} {
 		if !strings.Contains(message, expected) {
 			t.Errorf("missing %q in %s", expected, message)
+		}
+	}
+}
+
+func TestReportAggregateAssessmentHealth(t *testing.T) {
+	for _, typ := range []string{"assessment_health_error", "assessment_health_recovered"} {
+		event := safeEvent(protocol.Event{Type: typ, Summary: "Applicability assessment health", Details: map[string]any{
+			"health_scope": "advisory_applicability", "failure_count": json.Number("13"),
+		}}, Redactor())
+		if event.Details["health_scope"] != "advisory_applicability" || event.Details["failure_count"] != int64(13) {
+			t.Fatalf("aggregate health metadata lost: %+v", event.Details)
+		}
+		if !strings.Contains(formatEvent(event), "Consecutive unresolved assessments: 13") {
+			t.Fatal("aggregate health report lost the bounded failure count")
 		}
 	}
 }

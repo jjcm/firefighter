@@ -158,9 +158,9 @@ func TestNotificationSkippedCommandsCannotProduceVerifiedRemediation(t *testing.
 			e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
 				rounds++
 				if rounds == 1 {
-					return protocol.Decision{Summary: "Apply patch", Assessment: "exposed", Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Reason: "Patch service", Mutates: true, Verify: []string{"/bin/true"}}}}, nil
+					return protocol.Decision{Summary: "Apply patch", Assessment: "exposed", Applicability: affectedFixtureApplicability(), Actions: []protocol.Action{{ID: "patch", Kind: "command", Argv: []string{"/bin/true"}, Reason: "Patch service", Mutates: true, Verify: []string{"/bin/true"}}}}, nil
 				}
-				return protocol.Decision{Summary: "Claim remediation after skipped command", Assessment: "remediated", Done: true}, nil
+				return protocol.Decision{Summary: "Claim remediation after skipped command", Assessment: "remediated", Applicability: affectedFixtureApplicability(), Done: true}, nil
 			})
 			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked {
 				t.Fatalf("process incident: worked=%v err=%v", worked, err)

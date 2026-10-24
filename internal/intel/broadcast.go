@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jjcm/firefighter/internal/config"
 )
 
 const broadcastResponseLimit = 2 << 20
@@ -92,6 +94,12 @@ type broadcastCursor struct {
 // Broadcasts contain factual notices only. Their text is still untrusted input
 // for the local planner and never becomes a command or operator instruction.
 func NewBroadcast(cfg BroadcastConfig) (*Broadcast, error) {
+	if cfg.Name == "" {
+		cfg.Name = "broadcast"
+	}
+	if err := config.ValidateSourceName(cfg.Name); err != nil {
+		return nil, err
+	}
 	u, err := endpoint(cfg.URL, "")
 	if err != nil {
 		return nil, err
@@ -104,9 +112,6 @@ func NewBroadcast(cfg BroadcastConfig) (*Broadcast, error) {
 	key, err := base64.StdEncoding.Strict().DecodeString(cfg.PublicKey)
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		return nil, errors.New("broadcast public_key must be standard base64 of a 32-byte Ed25519 public key")
-	}
-	if cfg.Name == "" {
-		cfg.Name = "broadcast"
 	}
 	if cfg.MaxPages == 0 {
 		cfg.MaxPages = 10

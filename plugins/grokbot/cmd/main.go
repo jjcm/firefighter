@@ -37,7 +37,7 @@ func main() {
 }
 
 func run(path string) error {
-	cfg := config{Listen: "127.0.0.1:9087", SigningSecretEnv: "FIREFIGHTER_REPORT_SECRET", RoutineURLEnv: "GROKBOT_ROUTINE_URL", RoutineTokenEnv: "GROKBOT_ROUTINE_TOKEN", StatePath: "/var/lib/firefighter-grokbot/delivered.json", TimeoutSeconds: 15, IncludeTypes: []string{"started", "source_error", "source_recovered", "assessment_finished"}}
+	cfg := config{Listen: "127.0.0.1:9087", SigningSecretEnv: "FIREFIGHTER_REPORT_SECRET", RoutineURLEnv: "GROKBOT_ROUTINE_URL", RoutineTokenEnv: "GROKBOT_ROUTINE_TOKEN", StatePath: "/var/lib/firefighter-grokbot/delivered.json", TimeoutSeconds: 15, IncludeTypes: []string{"started", "source_error", "source_recovered", "assessment_health_error", "assessment_health_recovered", "assessment_finished"}}
 	f, err := os.Open(path)
 	if err != nil {
 		return errors.New("cannot open plugin config")

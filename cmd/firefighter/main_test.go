@@ -79,3 +79,15 @@ func TestMissingXTokenStillValidatesEndpoint(t *testing.T) {
 		t.Fatal("invalid X endpoint passed validation with missing token")
 	}
 }
+
+func TestSourceConstructionRejectsReservedNameWithoutConfigValidation(t *testing.T) {
+	for _, kind := range []string{"rss", "broadcast", "kev", "nvd", "x"} {
+		t.Run(kind, func(t *testing.T) {
+			c := config.Default()
+			c.Sources = []config.Source{{Name: "local-host", Type: kind}}
+			if sources, err := buildSources(c); err == nil || !strings.Contains(err.Error(), "reserved for internal host reviews") || len(sources) != 0 {
+				t.Fatalf("construction admitted the reserved source identity: sources=%v error=%v", sources, err)
+			}
+		})
+	}
+}

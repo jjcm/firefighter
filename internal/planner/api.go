@@ -233,7 +233,14 @@ func decisionSchema() map[string]any {
 	memoryUpdate := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "key", "text", "evidence", "tags", "ttl_hours"}, "properties": map[string]any{
 		"operation": map[string]any{"type": "string", "enum": []string{"upsert", "delete"}}, "key": str, "text": str, "evidence": strs, "tags": strs, "ttl_hours": map[string]any{"type": "integer"},
 	}}
-	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"summary", "assessment", "evidence", "actions", "done", "follow_up", "memory_updates"}, "properties": map[string]any{
-		"summary": str, "assessment": map[string]any{"type": "string", "enum": []string{"unknown", "not_affected", "exposed", "suspected_compromise", "confirmed_compromise", "remediated"}, "description": "Applicability or exploitation of the triggering notice on this host; broader posture only for local-host reviews. Unrelated residual risks belong in follow_up, not this notice's assessment."}, "evidence": strs, "actions": map[string]any{"type": "array", "items": action}, "done": map[string]any{"type": "boolean"}, "follow_up": str, "memory_updates": map[string]any{"type": "array", "items": memoryUpdate},
+	applicability := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"status", "product", "condition", "evidence"}, "properties": map[string]any{
+		"status":    map[string]any{"type": "string", "enum": []string{"unknown", "affected", "not_affected"}},
+		"product":   map[string]any{"type": "string", "description": "Notice's affected component, at most 500 bytes. Required when affected or not_affected."},
+		"condition": map[string]any{"type": "string", "description": "Vulnerable version/configuration or prerequisite and how local evidence meets or rules it out; at most 2000 bytes. Required when affected or not_affected."},
+		"evidence":  map[string]any{"type": "array", "items": str, "description": "At most 16 nonempty local observations or recent scoped memory citations, at most 2000 bytes each. At least one required when affected or not_affected. Advisory severity alone is not local evidence."},
+	}}
+	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"summary", "assessment", "applicability", "evidence", "actions", "done", "follow_up", "memory_updates"}, "properties": map[string]any{
+		"applicability": applicability,
+		"summary":       str, "assessment": map[string]any{"type": "string", "enum": []string{"unknown", "not_affected", "exposed", "suspected_compromise", "confirmed_compromise", "remediated"}, "description": "Applicability or exploitation of the triggering notice on this host; broader posture only for local-host reviews. Unrelated residual risks belong in follow_up, not this notice's assessment."}, "evidence": strs, "actions": map[string]any{"type": "array", "items": action}, "done": map[string]any{"type": "boolean"}, "follow_up": str, "memory_updates": map[string]any{"type": "array", "items": memoryUpdate},
 	}}
 }
