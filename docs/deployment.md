@@ -28,7 +28,7 @@ command output, credentials, or private incident records to the hub.
 | Hub environment | `/etc/firefighter-hub/firefighter-hub.env`, root-owned `0600` |
 | Hub state and signing key | `/var/lib/firefighter-hub`, directory `0700`, files `0600` |
 | Website assets | `/opt/firefighter/web` |
-| Public bootstrap | `/opt/firefighter/install.sh`, served only at `/install.sh` |
+| Public bootstrap | `/opt/firefighter/install.sh`, served at `/` for curl and explicitly at `/install.sh` |
 | Public publisher key | `/opt/firefighter/downloads/firefighter-hub.pub`, the only allowed download path |
 | ACME challenge webroot | `/var/lib/letsencrypt` |
 | Administrator access | SSH alias `firefighter`, user `j`, with passwordless sudo; existing `firefighter-host` / `firefighter-admin` access remains available |
@@ -125,9 +125,12 @@ The supplied [nginx configuration](../deploy/nginx.conf) matches this deployment
 It proxies the site and APIs to the loopback hub, overwrites `X-Real-IP` and
 `X-Forwarded-For` with nginx's observed client address, and exposes only the exact
 `/downloads/firefighter-hub.pub` public-key path. Other `/downloads/` paths return
-404; prebuilt Firefighter executables are not distributed. The exact `/install.sh` route serves
-only `/opt/firefighter/install.sh` as plain text; it does not expose the deployment
-directory. The hub maps `/faq` and `/faq/` to the public `faq.html` asset. These web
+404; prebuilt Firefighter executables are not distributed. At exact `/`, curl
+User-Agents receive `/opt/firefighter/install.sh` as plain text while browsers
+receive the website. Both responses use `Cache-Control: no-store` and
+`Vary: User-Agent` to prevent caches mixing the two representations. The explicit
+`/install.sh` route serves the same installer regardless of User-Agent; neither
+route exposes the deployment directory. The hub maps `/faq` and `/faq/` to the public `faq.html` asset. These web
 routes do not change the signed notice schema or add an API for running commands.
 The address overwrite is required because the hub trusts the local proxy's header
 for rate limiting.
@@ -261,19 +264,25 @@ configuration template must contain that verified publisher pin. Existing client
 configuration, including the pin, is preserved on upgrades. Keep real environment
 files, source checkouts, and hub state outside public paths.
 
-The nginx configuration allows only the exact `/install.sh` and
-`/downloads/firefighter-hub.pub` distribution paths; its old general downloads
-location is disabled. The Go compiler bootstrap downloads official compiler
+The nginx configuration serves the installer at exact `/` for curl and at
+`/install.sh` for any client. Only `/downloads/firefighter-hub.pub` is downloadable
+under `/downloads/`; its old general downloads location is disabled. The Go compiler bootstrap downloads official compiler
 archives from `go.dev` and checks them against HTTPS release metadata. This is a
 build prerequisite, not a prebuilt Firefighter release.
 
 ## Install a client
 
-From an interactive terminal on a Linux server with a running systemd manager:
+From an interactive terminal on a Linux server with a running systemd manager,
+the domain quickstart is:
 
 ```sh
-curl -fsSL https://45.76.243.18/install.sh | sudo bash
+curl -fsSL https://firefighter.sh | sudo bash
 ```
+
+The domain is still pending registry DNS publication and certificate issuance.
+Until it is ready, use `curl -fsSL https://45.76.243.18 | sudo bash`.
+`/install.sh` remains the explicit fallback when using a different User-Agent;
+opening `/` in a browser shows the website.
 
 The first installation displays an exact risk-acknowledgment sentence. The operator
 must type it through `/dev/tty`; no terminal or a different sentence causes an
@@ -384,6 +393,10 @@ curl --fail https://45.76.243.18/api/v1/status
 curl --fail --head https://45.76.243.18/faq
 curl --fail --head https://45.76.243.18/install.sh
 ```
+
+Also verify that curl receives identical installer bytes at `/` and `/install.sh`,
+a browser User-Agent receives HTML at `/`, and both root responses include
+`Cache-Control: no-store` and `Vary: User-Agent`.
 
 `/healthz` checks process liveness. Inspect source `state`, `last_success`, and
 `error_code` in `/api/v1/status` to assess actual intake. X may be degraded because

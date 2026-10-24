@@ -1,6 +1,6 @@
 # Public site
 
-The static site in `web/` is served by the hub on `/`. It has no build step, package dependencies, third-party scripts, remote fonts, analytics, or secrets. Deploy `index.html`, `faq.html`, `styles.css`, `app.js`, and `assets/` together. The hub maps `/faq` and `/faq/` to `faq.html`; `/faq.html` also works. The hub and static assets must share an HTTPS origin.
+The static site in `web/` is served by the hub on `/` for browsers; nginx serves the installer at the same path for curl requests. It has no build step, package dependencies, third-party scripts, remote fonts, analytics, or secrets. Deploy `index.html`, `faq.html`, `styles.css`, `app.js`, and `assets/` together. The hub maps `/faq` and `/faq/` to `faq.html`; `/faq.html` also works. The hub and static assets must share an HTTPS origin.
 
 ## Design
 
@@ -18,11 +18,13 @@ Official NVD lifecycle updates also hide rejected, withdrawn, or revoked CVEs fr
 
 ## Interactive source installation
 
-The public quickstart has one command:
+The public quickstart targets the domain:
 
 ```sh
-curl -fsSL https://45.76.243.18/install.sh | sudo bash
+curl -fsSL https://firefighter.sh | sudo bash
 ```
+
+The domain is pending registry DNS publication and certificate issuance. Until it is ready, use `curl -fsSL https://45.76.243.18 | sudo bash`. `/install.sh` remains the explicit installer path for clients that do not send curl's User-Agent.
 
 The landing page gives the experimental-use warning and a link to the FAQ. The exact first-install risk acknowledgment appears in the interactive installer, not as a second step on the page. The prompt reads `/dev/tty`, so piped script input cannot answer it. No terminal or a mismatched sentence aborts before writes. After successful startup, the acknowledgment is stored in root-owned mode `0600` at `/etc/firefighter/install-risk-acknowledgment`; a valid record skips it on upgrades. Runtime operation still has no approval prompts.
 
@@ -34,10 +36,10 @@ Interactive setup offers OpenRouter by default, OpenAI, and Anthropic, allows a 
 
 The same-origin distribution routes are limited to:
 
-- `/install.sh`, served from the reviewed `deploy/bootstrap.sh`.
+- `/` for curl requests and `/install.sh` for any client, both served from the reviewed `deploy/bootstrap.sh`.
 - `/downloads/firefighter-hub.pub`, the publisher's public Ed25519 key.
 
-The copyable command points at the public deployment. The public key download is a distribution convenience, not independent proof of authenticity. Verify the pin over a separate trusted channel. The installer is a separate download initiated by an operator; executable instructions never enter the signed notice protocol.
+The public key download is a distribution convenience, not independent proof of authenticity. Verify the pin over a separate trusted channel. The installer is a separate download initiated by an operator; executable instructions never enter the signed notice protocol.
 
 The [FAQ](https://45.76.243.18/faq) describes autonomous operation, costs, and limitations. Model credentials stay in each client's root-only environment file. Relevant local observations are sent to the selected model API, with best-effort secret redaction.
 
@@ -45,6 +47,8 @@ The [FAQ](https://45.76.243.18/faq) describes autonomous operation, costs, and l
 
 Use a restrictive Content Security Policy such as `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`, plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. Do not place configuration, credentials, hub state, or audit files under the static directory. Do not serve prebuilt client binaries or expose the source checkout through the website.
 
-nginx serves the exact `/install.sh` route from `/opt/firefighter/install.sh`, copied from `deploy/bootstrap.sh`. Only the exact public-key download path is allowed; the old general `/downloads/` route is disabled. nginx does not expose the deployment directory or add shell files to the hub's static extension allowlist. Other API paths retain their existing strict routing and notice schema.
+nginx serves `/opt/firefighter/install.sh`, copied from `deploy/bootstrap.sh`, at exact `/` for curl User-Agents and at `/install.sh` regardless of User-Agent. Browsers receive the site at `/`. Both root variants use `Cache-Control: no-store` and `Vary: User-Agent` so caches do not mix HTML and shell responses. Only the exact public-key download path is allowed; the old general `/downloads/` route is disabled. nginx does not expose the deployment directory or add shell files to the hub's static extension allowlist. Other API paths retain their existing strict routing and notice schema.
+
+After publishing nginx changes, check that curl receives the same installer bytes at `/` and `/install.sh`, a browser User-Agent receives HTML at `/`, and both root variants carry the cache headers above.
 
 Local preview: `python3 -m http.server 4173 --bind 127.0.0.1 --directory web`. The feed honestly shows unavailable unless an API is supplied on that origin. Check JavaScript syntax with `node --check web/app.js`. Inspect desktop and mobile layouts after changes, including the compact source badges and installation command. Exercise search, source filters, pagination, degraded-source state, literal hostile HTML text, and rejection of `javascript:` source links. Verify that publication ordering overrides ingestion order, sequence breaks publication-time ties, historical years remain visible, and zero dates never produce source-success tooltips.

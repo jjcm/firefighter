@@ -83,7 +83,7 @@ ff_prepare_workspace() {
 
 main() {
   [[ $# -eq 0 ]] || ff_die 'This installer accepts no arguments or acknowledgment bypass flags.'
-  [[ "$(id -u)" == 0 ]] || ff_die 'Run as root: curl -fsSL https://45.76.243.18/install.sh | sudo bash'
+  [[ "$(id -u)" == 0 ]] || ff_die 'Run as root: curl -fsSL https://firefighter.sh | sudo bash'
   [[ "$(uname -s)" == Linux ]] || ff_die 'Installation requires Linux and systemd.'
   [[ -d /run/systemd/system ]] || ff_die 'Installation requires a running systemd system manager.'
   for dependency in stat install mktemp systemctl awk tar sha256sum df; do
