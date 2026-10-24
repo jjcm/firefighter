@@ -5,7 +5,7 @@ export PATH
 umask 077
 
 # Fixed reviewed source revision; update only after publishing the source commit.
-FF_SOURCE_REV=7a637d7c44f50daa99636e10f99eceff1d96d51e
+FF_SOURCE_REV=e6b646eec8931e57fc76406cb17a3670c3c39332
 FF_SOURCE_REPOSITORY=https://github.com/jjcm/firefighter.git
 
 # Self-contained copy of install-ack.sh; deploy/test_install.py checks equality.
