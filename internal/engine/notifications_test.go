@@ -77,6 +77,30 @@ func TestNotificationsPersistIntentAndVerificationOutcomes(t *testing.T) {
 				if v.Type == "assessment_started" {
 					start = v.Details["source"] == "local-host"
 				}
+				if v.Type == "action_started" || v.Type == "action_finished" {
+					switch v.Details["phase"] {
+					case "action":
+						if v.Details["mutates_source"] != "planner_declaration" || v.Details["parent_action_id"] != nil || v.Details["mutates"] != true {
+							t.Errorf("ordinary action misrepresented: %+v", v)
+						}
+					case "verification":
+						if v.Details["mutates_source"] != "expected_read_only_verification" || v.Details["parent_action_id"] != "patch" || v.Details["mutates"] != false {
+							t.Errorf("verification lacks intended behavior or parent: %+v", v)
+						}
+						if v.Summary != "Check the outcome of action patch" || strings.Contains(v.Summary, "Patch affected service") {
+							t.Errorf("verification describes the original mutation: %s", v.Summary)
+						}
+					case "rollback":
+						if v.Details["mutates_source"] != "rollback_contract" || v.Details["parent_action_id"] != "patch" || v.Details["mutates"] != true {
+							t.Errorf("rollback lacks intended behavior or parent: %+v", v)
+						}
+					}
+					if v.Type == "action_started" {
+						if _, ok := v.Details["exit_code"]; ok {
+							t.Error("start event acquired the later outcome through shared details")
+						}
+					}
+				}
 				if v.Type == "action_finished" && v.Details["phase"] == "verification" {
 					verification = true
 					if v.Details["verified"] == failVerify {

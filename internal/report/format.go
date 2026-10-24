@@ -22,7 +22,7 @@ func safeEvent(event protocol.Event, redact func(string) string) protocol.Event 
 	for _, field := range []struct {
 		key   string
 		limit int
-	}{{"source", 96}, {"status", 32}, {"assessment", 32}, {"phase", 32}, {"action_id", 96}, {"reason", 200}, {"error", 200}, {"follow_up", 240}} {
+	}{{"source", 96}, {"status", 32}, {"assessment", 32}, {"phase", 32}, {"action_id", 96}, {"parent_action_id", 96}, {"mutates_source", 40}, {"reason", 200}, {"error", 200}, {"follow_up", 240}} {
 		if value, ok := event.Details[field.key].(string); ok && value != "" {
 			out.Details[field.key] = plain(value, field.limit, redact)
 		}
@@ -71,6 +71,24 @@ func formatEvent(event protocol.Event) string {
 	phase, _ := event.Details["phase"].(string)
 	if phase != "" {
 		lines = append(lines, "Phase: "+phase)
+	}
+	if parent, ok := event.Details["parent_action_id"].(string); ok && parent != "" {
+		lines = append(lines, "Parent action: "+parent)
+	}
+	if mutates, ok := event.Details["mutates"].(bool); ok {
+		intent := "no changes declared"
+		if mutates {
+			intent = "changes declared"
+		}
+		switch event.Details["mutates_source"] {
+		case "planner_declaration":
+			intent += " by planner"
+		case "expected_read_only_verification":
+			intent = "verification expected to be read-only"
+		case "rollback_contract":
+			intent = "rollback expected to change state"
+		}
+		lines = append(lines, "Mutation intent: "+intent+" (declaration, not enforcement)")
 	}
 	exit, hasExit := integer(event.Details["exit_code"])
 	if hasExit {

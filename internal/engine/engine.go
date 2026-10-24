@@ -482,8 +482,8 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 			}
 			failed := result.ExitCode != 0 || result.Error != "" || result.TimedOut || result.Skipped
 			if !failed && len(action.Verify) > 0 {
-				check := protocol.Action{ID: action.ID + "-verify", Kind: "command", Argv: action.Verify, Dir: action.Dir, TimeoutSeconds: action.TimeoutSeconds, Reason: "Verify: " + action.Reason}
-				vr, xerr := e.executePhase(ctx, in, turn, check, "verification")
+				check := protocol.Action{ID: action.ID + "-verify", Kind: "command", Argv: action.Verify, Dir: action.Dir, TimeoutSeconds: action.TimeoutSeconds, Reason: "Check the outcome of action " + action.ID}
+				vr, xerr := e.executePhase(ctx, in, turn, check, "verification", action.ID)
 				if xerr != nil {
 					return xerr
 				}
@@ -494,7 +494,7 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 			}
 			if failed && len(action.Rollback) > 0 && ctx.Err() == nil {
 				rollback := protocol.Action{ID: action.ID + "-rollback", Kind: "command", Argv: action.Rollback, Dir: action.Dir, TimeoutSeconds: action.TimeoutSeconds, Reason: "Recover after failed action or verification: " + action.Reason, Mutates: true}
-				if _, err = e.executePhase(ctx, in, turn, rollback, "rollback"); err != nil {
+				if _, err = e.executePhase(ctx, in, turn, rollback, "rollback", action.ID); err != nil {
 					return err
 				}
 				verified = false
@@ -509,17 +509,30 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 	return e.finish(in, "deferred", "Assessment round budget reached; further work scheduled", errors.New("round budget exhausted"), nil)
 }
 func (e *Engine) execute(ctx context.Context, in *store.Incident, turn int, action protocol.Action) (protocol.ActionResult, error) {
-	return e.executePhase(ctx, in, turn, action, "action")
+	return e.executePhase(ctx, in, turn, action, "action", "")
 }
 
-func (e *Engine) executePhase(ctx context.Context, in *store.Incident, turn int, action protocol.Action, phase string) (protocol.ActionResult, error) {
+func (e *Engine) executePhase(ctx context.Context, in *store.Incident, turn int, action protocol.Action, phase, parentActionID string) (protocol.ActionResult, error) {
 	if err := e.Runner.Validate(action); err != nil {
 		return protocol.ActionResult{}, err
+	}
+	// Mutates describes intended behavior, not observed writes or a runner
+	// restriction. Synthetic follow-up commands have harness expectations rather
+	// than a separate planner declaration. Keep that distinction in every report.
+	mutatesSource := "planner_declaration"
+	if phase == "verification" {
+		mutatesSource = "expected_read_only_verification"
+	} else if phase == "rollback" {
+		mutatesSource = "rollback_contract"
+	}
+	details := map[string]interface{}{"action_id": action.ID, "mutates": action.Mutates, "mutates_source": mutatesSource, "phase": phase}
+	if parentActionID != "" {
+		details["parent_action_id"] = parentActionID
 	}
 	e.mu.Lock()
 	err := e.Store.Append("action_intent", in.ID, e.cleanDecision(protocol.Decision{Actions: []protocol.Action{action}}).Actions[0])
 	if err == nil {
-		err = e.emitLocked("action_started", in.ID, action.Reason, map[string]interface{}{"action_id": action.ID, "mutates": action.Mutates, "phase": phase})
+		err = e.emitLocked("action_started", in.ID, action.Reason, details)
 	}
 	if err == nil {
 		// Even a command labeled read-only may change state. Invalidate before
@@ -543,7 +556,9 @@ func (e *Engine) executePhase(ctx context.Context, in *store.Incident, turn int,
 	}
 	in.History[turn].Results = append(in.History[turn].Results, result)
 	verified := phase == "verification" && result.ExitCode == 0 && result.Error == "" && !result.TimedOut && !result.Skipped
-	if err = e.emitLocked("action_finished", in.ID, action.Reason, map[string]interface{}{"action_id": action.ID, "exit_code": result.ExitCode, "timed_out": result.TimedOut, "error": result.Error, "skipped": result.Skipped, "mutates": action.Mutates, "phase": phase, "verified": verified}); err != nil {
+	details["exit_code"], details["timed_out"], details["error"] = result.ExitCode, result.TimedOut, result.Error
+	details["skipped"], details["verified"] = result.Skipped, verified
+	if err = e.emitLocked("action_finished", in.ID, action.Reason, details); err != nil {
 		return result, err
 	}
 	return result, e.Store.Save(e.State)

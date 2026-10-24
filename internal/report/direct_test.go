@@ -95,14 +95,14 @@ func TestDirectProvidersNativePayloadAndAcknowledgement(t *testing.T) {
 					text = payload["message"].(string)
 					event := payload["event"].(map[string]any)
 					details := event["details"].(map[string]any)
-					if event["id"] != "event-fixture" || details["verified"] != true || details["argv"] != nil || details["output"] != nil || details["environment"] != nil {
+					if event["id"] != "event-fixture" || details["verified"] != true || details["parent_action_id"] != "restart-sshd-patched" || details["mutates_source"] != "expected_read_only_verification" || details["argv"] != nil || details["output"] != nil || details["environment"] != nil {
 						t.Fatal("Grok event omitted outcomes or included raw execution details")
 					}
 				}
 				if kind != "grokbot" && r.Header.Get("Authorization") != "" {
 					t.Error("unnecessary bearer credential attached")
 				}
-				for _, expected := range []string{"fixture-host", "event-fixture", "Verification: passed", "Exit: 0"} {
+				for _, expected := range []string{"fixture-host", "event-fixture", "Verification: passed", "Exit: 0", "Parent action: restart-sshd-patched", "verification expected to be read-only", "declaration, not enforcement"} {
 					if kind == "discord" {
 						expected = discordPlain(expected)
 					}
@@ -116,7 +116,7 @@ func TestDirectProvidersNativePayloadAndAcknowledgement(t *testing.T) {
 				}
 				return response(200, map[string]string{"slack": "ok", "discord": `{"id":"987654321"}`, "telegram": `{"ok":true,"result":{"message_id":1}}`, "grokbot": "accepted"}[kind]), nil
 			})
-			event := protocol.Event{ID: "event-fixture", Host: "fixture-host", Type: "action_finished", IncidentID: "incident-fixture", Summary: "**URGENT** @everyone <@1234> [click](https://untrusted.invalid)", Details: map[string]any{"phase": "verification", "mutates": false, "verified": true, "exit_code": 0, "argv": []string{"raw-command-argv"}, "output": "raw-command-output", "environment": "hidden-environment"}}
+			event := protocol.Event{ID: "event-fixture", Host: "fixture-host", Type: "action_finished", IncidentID: "incident-fixture", Summary: "**URGENT** @everyone <@1234> [click](https://untrusted.invalid)", Details: map[string]any{"phase": "verification", "parent_action_id": "restart-sshd-patched", "mutates_source": "expected_read_only_verification", "mutates": false, "verified": true, "exit_code": 0, "argv": []string{"raw-command-argv"}, "output": "raw-command-output", "environment": "hidden-environment"}}
 			if err := s.Send(context.Background(), event); err != nil {
 				t.Fatal(err)
 			}
@@ -404,6 +404,38 @@ func TestReportDistinguishesChangesVerificationAndEventTime(t *testing.T) {
 			message := formatEvent(event)
 			if !strings.Contains(message, tc.want) || strings.Contains(message, tc.absent) || !strings.Contains(message, "Time: 2026-10-24T07:30:00Z") || !strings.Contains(message, "Event: audit-event-id") {
 				t.Fatalf("outcome or event time unclear:\n%s", message)
+			}
+		})
+	}
+}
+
+func TestReportDescribesMutationIntentWithoutClaimingEnforcement(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, want string
+		mutates            bool
+	}{
+		{"planner change", "planner_declaration", "changes declared by planner", true},
+		{"planner inspection", "planner_declaration", "no changes declared by planner", false},
+		{"verification", "expected_read_only_verification", "verification expected to be read-only", false},
+		{"rollback", "rollback_contract", "rollback expected to change state", true},
+		{"legacy declaration", "", "no changes declared", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const secret = "private-fixture-credential"
+			event := safeEvent(protocol.Event{Type: "action_finished", Details: map[string]any{
+				"mutates": tc.mutates, "mutates_source": tc.source,
+				"parent_action_id": "patch-" + secret,
+				"argv":             []string{"must-remain-local"}, "output": "must-remain-local",
+			}}, Redactor(secret))
+			message := formatEvent(event)
+			if !strings.Contains(message, "Mutation intent: "+tc.want+" (declaration, not enforcement)") {
+				t.Fatalf("mutation declaration could be mistaken for enforcement:\n%s", message)
+			}
+			if event.Details["parent_action_id"] != "patch-[REDACTED]" || !strings.Contains(message, "Parent action: patch-[REDACTED]") || strings.Contains(message, secret) {
+				t.Fatal("parent relationship missing or not redacted")
+			}
+			if event.Details["argv"] != nil || event.Details["output"] != nil || strings.Contains(message, "must-remain-local") {
+				t.Fatal("execution evidence escaped the report boundary")
 			}
 		})
 	}
