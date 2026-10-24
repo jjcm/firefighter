@@ -40,6 +40,11 @@ func conflictingApplicability(d protocol.Decision) bool {
 // executable intent. A rejected batch is replanned in the same bounded incident
 // budget without asking the operator or trusting a prior attempt's verdict.
 func gateNoticeDecision(d protocol.Decision) (protocol.Decision, bool, bool) {
+	// The engine validates this explicit final disposition before the gate.
+	// It classifies the source text, without asserting anything about host safety.
+	if d.Assessment == "not_a_notice" && protocol.ValidateNoticeDisposition(d) == nil {
+		return d, false, false
+	}
 	if conflictingApplicability(d) {
 		// Resolve contradictory conclusions before either executing work or
 		// permanently retiring the notice as irrelevant.

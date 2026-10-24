@@ -36,7 +36,7 @@ func observeHealth(t *testing.T, e *Engine, in *store.Incident, status string, c
 	t.Helper()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err := e.observeAssessmentHealthLocked(in, status, cause); err != nil {
+	if err := e.observeAssessmentHealthLocked(in, status, cause, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Store.Save(e.State); err != nil {
@@ -503,7 +503,7 @@ func TestAssessmentHealthLegacyRecoveryProgressCannotCrossUncheckpointedFailure(
 	}
 	removeLegacyAuditCheckpoint(t, dir)
 	e.mu.Lock()
-	err := e.observeAssessmentHealthLocked(in, "deferred", errors.New("intervening unresolved assessment"))
+	err := e.observeAssessmentHealthLocked(in, "deferred", errors.New("intervening unresolved assessment"), nil)
 	e.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -532,7 +532,7 @@ func TestAssessmentHealthRecoversNotificationCrashWindows(t *testing.T) {
 		observeHealth(t, e, in, "deferred", errors.New("unresolved"))
 	}
 	e.mu.Lock()
-	err := e.observeAssessmentHealthLocked(in, "deferred", errors.New("unresolved"))
+	err := e.observeAssessmentHealthLocked(in, "deferred", errors.New("unresolved"), nil)
 	e.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -552,7 +552,7 @@ func TestAssessmentHealthRecoversNotificationCrashWindows(t *testing.T) {
 	observeHealth(t, e, in, "completed", nil)
 	observeHealth(t, e, in, "completed", nil)
 	e.mu.Lock()
-	err = e.observeAssessmentHealthLocked(in, "completed", nil)
+	err = e.observeAssessmentHealthLocked(in, "completed", nil, nil)
 	e.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)

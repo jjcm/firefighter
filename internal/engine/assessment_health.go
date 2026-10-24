@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jjcm/firefighter/internal/protocol"
 	"github.com/jjcm/firefighter/internal/store"
 )
 
@@ -18,8 +19,14 @@ const (
 // observeAssessmentHealthLocked reports an aggregate inability to determine
 // applicability without turning each unrelated disclosure into an alert. The
 // caller holds e.mu and checkpoints State after this method succeeds.
-func (e *Engine) observeAssessmentHealthLocked(in *store.Incident, status string, cause error) error {
+func (e *Engine) observeAssessmentHealthLocked(in *store.Incident, status string, cause error, decision *protocol.Decision) error {
 	if !requiresApplicability(in) || interruptionReason(cause) == "daemon_stopping" {
+		return nil
+	}
+	// Source chatter is neither an unresolved advisory nor evidence of healthy
+	// advisory assessment. Require this attempt's validated final disposition;
+	// never infer it from source, CVE absence, or a previous decision in history.
+	if status == "completed" && cause == nil && decision != nil && decision.Assessment == "not_a_notice" && protocol.ValidateNoticeDisposition(*decision) == nil && in.ApplicabilityStatus == "unknown" {
 		return nil
 	}
 	health := &e.State.AssessmentHealth

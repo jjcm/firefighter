@@ -423,6 +423,12 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 		if err := protocol.ValidateApplicability(decision.Applicability); err != nil {
 			return e.finish(in, "deferred", "Planner returned invalid applicability evidence", err, nil)
 		}
+		if err := protocol.ValidateNoticeDisposition(decision); err != nil {
+			return e.finish(in, "deferred", "Planner returned an invalid notice classification", err, nil)
+		}
+		if decision.Assessment == "not_a_notice" && !requiresApplicability(in) {
+			return e.finish(in, "deferred", "A host review cannot be dismissed as a non-notice", errors.New("not_a_notice is only valid for incoming source items"), nil)
+		}
 		replanApplicability := false
 		if requiresApplicability(in) {
 			status := noticeApplicability(decision)
@@ -653,7 +659,7 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 			}
 		}
 	}
-	terminal := status == "completed" && decision != nil && (decision.Assessment == "not_affected" || decision.Assessment == "remediated")
+	terminal := status == "completed" && decision != nil && (decision.Assessment == "not_affected" || decision.Assessment == "remediated" || decision.Assessment == "not_a_notice")
 	if terminal {
 		in.NextAttempt = time.Time{}
 		in.History = []protocol.Turn{{Decision: *decision}}
@@ -689,7 +695,7 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 	if err := e.emitLocked("assessment_finished", in.ID, summary, details); err != nil {
 		return err
 	}
-	if err := e.observeAssessmentHealthLocked(in, status, cause); err != nil {
+	if err := e.observeAssessmentHealthLocked(in, status, cause, decision); err != nil {
 		return err
 	}
 	return e.Store.Save(e.State)
