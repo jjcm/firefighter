@@ -30,6 +30,7 @@ type storedNotice struct {
 	Notice    Notice `json:"notice"`
 	Hash      string `json:"hash"`
 	Withdrawn bool   `json:"withdrawn,omitempty"`
+	CVSS      *CVSS  `json:"cvss,omitempty"`
 }
 type diskState struct {
 	Version     int                     `json:"version"`

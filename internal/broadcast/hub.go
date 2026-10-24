@@ -69,6 +69,7 @@ func Open(cfg Config) (*Hub, error) {
 		return fail(err)
 	}
 	seedCVEStatuses(&state, cfg)
+	seedCVSS(&state, cfg)
 	return &Hub{config: cfg, state: state, key: key, lock: lock, now: time.Now}, nil
 }
 func (h *Hub) Close() error {
@@ -149,14 +150,16 @@ func (h *Hub) PollOnce(ctx context.Context, source ScheduledSource) error {
 		}
 		ss.NextPoll = now.Add(delay)
 	} else {
-		seen := make(map[string]bool, len(next.Notices))
-		for _, entry := range next.Notices {
-			seen[entry.Hash] = true
+		seen := make(map[string]int, len(next.Notices))
+		for i, entry := range next.Notices {
+			seen[entry.Hash] = i
 		}
 		for _, item := range result.Items {
 			item.Source = source.Name
 			withdrawn := false
+			var cvss *CVSS
 			if isNVDSource(h.config, source.Name) {
+				cvss = nvdCVSS(item.ID, item.Body)
 				if status, ok := nvdLifecycle(item.ID, item.Title, item.Body, item.ModifiedAt); ok {
 					updateCVEStatus(next.CVEStatuses, item.ID, status)
 					withdrawn = status.Withdrawn
@@ -167,17 +170,20 @@ func (h *Hub) PollOnce(ctx context.Context, source ScheduledSource) error {
 				return errors.New("cannot encode upstream notice")
 			}
 			fingerprint := hash(raw)
-			if seen[fingerprint] {
+			if index, exists := seen[fingerprint]; exists {
+				// Refresh display metadata from the complete body on overlaps,
+				// without republishing an advisory or changing its client cursor.
+				next.Notices[index].CVSS = cvss
 				continue
 			}
-			seen[fingerprint] = true
+			seen[fingerprint] = len(next.Notices)
 			if next.Sequence == ^uint64(0)-1 {
 				return errors.New("hub sequence exhausted")
 			}
 			notice := publicNotice(item, source.Name, now)
 			next.Sequence++
 			notice.Seq = next.Sequence
-			next.Notices = append(next.Notices, storedNotice{Notice: notice, Hash: fingerprint, Withdrawn: withdrawn})
+			next.Notices = append(next.Notices, storedNotice{Notice: notice, Hash: fingerprint, Withdrawn: withdrawn, CVSS: cvss})
 			ss.Published++
 		}
 		ss.Cursor = result.Cursor
@@ -282,10 +288,15 @@ func (h *Hub) Batch(after uint64, limit int) (Batch, error) {
 // notices referencing CVEs known to be withdrawn. Filtering or reordering this
 // view never changes stored history or delivery cursors.
 type Recent struct {
-	Version    int       `json:"version"`
-	Kind       string    `json:"kind"`
-	ServerTime time.Time `json:"server_time"`
-	Notices    []Notice  `json:"notices"`
+	Version    int            `json:"version"`
+	Kind       string         `json:"kind"`
+	ServerTime time.Time      `json:"server_time"`
+	Notices    []RecentNotice `json:"notices"`
+}
+
+type RecentNotice struct {
+	Notice
+	CVSS *CVSS `json:"cvss,omitempty"`
 }
 
 func (h *Hub) Recent(limit int) (Recent, error) {
@@ -318,13 +329,18 @@ func (h *Hub) Recent(limit int) (Recent, error) {
 		}
 		return at.After(bt)
 	})
-	r := Recent{Version: 1, Kind: "recent_notices", ServerTime: h.now().UTC(), Notices: []Notice{}}
+	r := Recent{Version: 1, Kind: "recent_notices", ServerTime: h.now().UTC(), Notices: []RecentNotice{}}
 	payloadBytes := 1024
 	for _, index := range indices {
 		if len(r.Notices) >= limit {
 			break
 		}
-		n := h.state.Notices[index].Notice
+		entry := h.state.Notices[index]
+		n := RecentNotice{Notice: entry.Notice}
+		if entry.CVSS != nil {
+			cvss := *entry.CVSS
+			n.CVSS = &cvss
+		}
 		encoded, _ := json.Marshal(n)
 		if payloadBytes+len(encoded)+1 > 1<<20 && len(r.Notices) > 0 {
 			break

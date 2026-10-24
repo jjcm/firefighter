@@ -95,10 +95,22 @@
     }).slice(0, 60);
   }
 
+  function normalizeCVSS(value) {
+    if (!value || typeof value.score !== "number" || !Number.isFinite(value.score) || value.score < 0 || value.score > 10 || !["4.0", "3.1", "3.0", "2.0"].includes(value.version)) return null;
+    return { score: value.score, version: value.version, source: boundedString(value.source, 200) };
+  }
+
+  function severityLevel(cvss) {
+    if (!cvss) return "unscored";
+    if (cvss.version === "2.0") return cvss.score >= 7 ? "high" : cvss.score >= 4 ? "medium" : "low";
+    return cvss.score >= 9 ? "critical" : cvss.score >= 7 ? "high" : cvss.score >= 4 ? "medium" : cvss.score > 0 ? "low" : "none";
+  }
+
   function normalizeNotice(notice) {
     if (!notice || !validSequence(notice.seq) || typeof notice.title !== "string" || typeof notice.source !== "string" || notice.untrusted !== true) return null;
     return {
       seq: notice.seq,
+      cvss: normalizeCVSS(notice.cvss),
       source: boundedString(notice.source, 100),
       id: boundedString(notice.id, 300),
       title: boundedString(notice.title, 600) || "Untitled advisory",
@@ -143,6 +155,14 @@
         button.setAttribute("aria-expanded", state.expanded.has(notice.seq) ? "true" : "false");
         main.append(button);
         if (notice.cves.length) main.append(node("span", "notice-cves", notice.cves.join(" · ")));
+        const level = severityLevel(notice.cvss);
+        const severity = node("div", `notice-severity severity-${level}`);
+        const severityLabel = level.charAt(0).toUpperCase() + level.slice(1);
+        severity.append(node("span", "severity-score", notice.cvss ? notice.cvss.score.toFixed(1) : "—"));
+        severity.append(node("span", "severity-label", severityLabel));
+        const scoreDescription = notice.cvss ? `${severityLabel} severity · CVSS ${notice.cvss.version} base score ${notice.cvss.score.toFixed(1)} out of 10${notice.cvss.source ? ` · ${notice.cvss.source}` : ""}` : "No published CVSS score available";
+        severity.title = scoreDescription;
+        severity.setAttribute("aria-label", scoreDescription);
         const hasPublished = Boolean(dateValue(notice.published));
         const timestamp = hasPublished ? notice.published : notice.observed;
         const displayAge = age(timestamp);
@@ -167,7 +187,7 @@
           button.setAttribute("aria-expanded", String(expanded));
           detail.hidden = !expanded;
         });
-        row.append(source, main, time, link, detail);
+        row.append(source, main, severity, time, link, detail);
         fragment.append(row);
       }
       list.replaceChildren(fragment);

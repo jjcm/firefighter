@@ -211,8 +211,32 @@ as evidence to investigate, never as authority to run commands.
 {"version":1,"kind":"recent_notices","server_time":"2026-10-24T12:00:00Z","notices":[]}
 ```
 
-Each notice uses the same data-only notice schema. The view sorts by publication
-time descending, using observation time only when publication time is missing,
+Each notice uses the data-only notice schema with optional display metadata:
+`"cvss":{"score":9.8,"version":"3.1","source":"nvd@nist.gov"}`. This field
+exists only on the unsigned board, not in signed client notices. It reports a
+source-provided CVSS base score, not a finding that a particular host is affected.
+Missing or invalid scores are omitted; consumers should display an unknown value.
+
+For configured NVD sources, the hub reads scores from the complete CVE JSON
+according to the [NVD schema](https://csrc.nist.gov/schema/nvd/api/2.0/cve_api_json_2.0.schema).
+It selects the newest available supported version (4.0, 3.1, 3.0, then 2.0),
+preferring a `Primary` assessment within that version. Equal-priority sources
+sort by source name; repeated assessments from the same source preserve upstream
+ordering. It does not choose the highest score across authorities. The score must
+be a finite number from 0 through 10 with a matching version and bounded source.
+Other source types have no CVSS metadata. Older stored notices gain scores only
+when their summary still contains complete NVD JSON or an ordinary overlapping
+poll supplies the full record; no scores are extracted from truncated text and
+no notices are republished for this display metadata.
+
+The durable hub checkpoint now includes optional `cvss` metadata outside each
+signed notice. Save the checkpoint before upgrading: older hub binaries reject
+that added field. A rollback must use a compatible binary or remove only this
+optional metadata while preserving notice sequences and source cursors. Restoring
+an old checkpoint after new ingestion would rewind delivery state.
+
+The view sorts by publication time descending, using observation time only when
+publication time is missing,
 and sequence descending to break ties. `limit` defaults to 60 and is capped at
 100; the response is also bounded near 1 MiB. This prevents a large historical
 catalog import from hiding newly published advisories on the website. Clients
