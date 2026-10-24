@@ -140,7 +140,7 @@ func run(args []string) error {
 	}
 	hostname, _ := os.Hostname()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	app := &engine.Engine{Config: c, Store: disk, State: state, Planner: p, Runner: host.NewRunner(host.Config{MaxTimeout: config.Seconds(c.CommandTimeoutSeconds), MaxOutputBytes: c.MaxOutputBytes, Redact: redact}), Sources: sources, Reporter: sender, Redact: redact, Log: logger, Hostname: hostname}
+	app := &engine.Engine{Config: c, Store: disk, State: state, Planner: p, Runner: host.NewRunner(host.Config{MaxTimeout: config.Seconds(c.CommandTimeoutSeconds), MaxOutputBytes: c.MaxOutputBytes, Redact: redact}), Sources: sources, Reporter: sender, Redact: redact, Log: logger, Hostname: hostname, Version: version}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if command == "once" {

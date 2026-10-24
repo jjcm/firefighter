@@ -143,6 +143,9 @@ func (a *API) Decide(ctx context.Context, request protocol.Request) (protocol.De
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(a.config.MaxResponseBytes)+1))
 	if err != nil {
+		if ctx.Err() != nil {
+			return zero, fmt.Errorf("planner response interrupted: %w", ctx.Err())
+		}
 		return zero, errors.New("cannot read planner response")
 	}
 	if len(data) > a.config.MaxResponseBytes {
@@ -224,12 +227,13 @@ func decisionSchema() map[string]any {
 	str := map[string]any{"type": "string"}
 	strs := map[string]any{"type": "array", "items": str}
 	action := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "kind", "argv", "dir", "timeout_seconds", "reason", "mutates", "rollback", "verify"}, "properties": map[string]any{
-		"id": str, "kind": map[string]any{"type": "string", "enum": []string{"command"}}, "argv": strs, "dir": str, "timeout_seconds": map[string]any{"type": "integer"}, "reason": str, "mutates": map[string]any{"type": "boolean"}, "rollback": strs, "verify": strs,
+		"id": str, "kind": map[string]any{"type": "string", "enum": []string{"command"}}, "argv": strs, "dir": str, "timeout_seconds": map[string]any{"type": "integer"}, "reason": str, "mutates": map[string]any{"type": "boolean"}, "rollback": strs,
+		"verify": map[string]any{"type": "array", "items": str, "description": "A separate read-only assertion of a mutating action's fix and service health. Use [] for ordinary read-only observations; their output is evaluated next turn. Do not repeat the observation command here."},
 	}}
 	memoryUpdate := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"operation", "key", "text", "evidence", "tags", "ttl_hours"}, "properties": map[string]any{
 		"operation": map[string]any{"type": "string", "enum": []string{"upsert", "delete"}}, "key": str, "text": str, "evidence": strs, "tags": strs, "ttl_hours": map[string]any{"type": "integer"},
 	}}
 	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"summary", "assessment", "evidence", "actions", "done", "follow_up", "memory_updates"}, "properties": map[string]any{
-		"summary": str, "assessment": map[string]any{"type": "string", "enum": []string{"unknown", "not_affected", "exposed", "suspected_compromise", "confirmed_compromise", "remediated"}}, "evidence": strs, "actions": map[string]any{"type": "array", "items": action}, "done": map[string]any{"type": "boolean"}, "follow_up": str, "memory_updates": map[string]any{"type": "array", "items": memoryUpdate},
+		"summary": str, "assessment": map[string]any{"type": "string", "enum": []string{"unknown", "not_affected", "exposed", "suspected_compromise", "confirmed_compromise", "remediated"}, "description": "Applicability or exploitation of the triggering notice on this host; broader posture only for local-host reviews. Unrelated residual risks belong in follow_up, not this notice's assessment."}, "evidence": strs, "actions": map[string]any{"type": "array", "items": action}, "done": map[string]any{"type": "boolean"}, "follow_up": str, "memory_updates": map[string]any{"type": "array", "items": memoryUpdate},
 	}}
 }

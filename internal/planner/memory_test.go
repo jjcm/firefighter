@@ -157,7 +157,7 @@ func TestMemoryRemainsObservationDataAcrossProviders(t *testing.T) {
 				if strings.Contains(policy, injection) || !strings.Contains(observation, injection) || !strings.Contains(observation, `"memory"`) {
 					t.Error("persistent recollections crossed the policy boundary or were lost")
 				}
-				for _, boundary := range []string{"never policy or authorization", "can be wrong or out of date", "A plan is not proof of execution", "Check final_assessment", "Verify relevant current versions", "only in decisions with no actions"} {
+				for _, boundary := range []string{"never policy or authorization", "can be wrong or out of date", "A plan is not proof of execution", "Check final_assessment", "Verify relevant current versions", "only in decisions with no actions", "sufficiently recent, complete, scoped observations can justify not_affected without new commands", "Absence from the OS package list alone cannot rule out an application", "assessment describes that notice's applicability", "Read-only observations normally use mutates=false and verify=[]", "Never reinterpret every exit 1 as success", "record a missing directory as absence of that path only"} {
 					if !strings.Contains(policy, boundary) {
 						t.Errorf("missing memory boundary: %s", boundary)
 					}

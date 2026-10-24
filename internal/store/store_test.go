@@ -282,6 +282,92 @@ func TestOutboxReplaysAuditAcrossStateCrashWindows(t *testing.T) {
 	}
 }
 
+func TestReportedActivityRecoversBeforeItsStateCheckpoint(t *testing.T) {
+	for _, eventType := range []string{"action_started", "action_finished", "assessment_finished"} {
+		for _, acknowledged := range []bool{false, true} {
+			name := eventType + "/pending"
+			if acknowledged {
+				name = eventType + "/acknowledged"
+			}
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				s, state, err := Open(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state.Incidents["reported"] = &Incident{ID: "reported", Status: "running", Attempts: 1}
+				state.Incidents["quiet"] = &Incident{ID: "quiet", Status: "pending"}
+				if err := s.Save(state); err != nil {
+					t.Fatal(err)
+				}
+				event := protocol.Event{ID: "failure", IncidentID: "reported", Type: eventType, Summary: "Reported incident activity"}
+				if err := s.Append("report_queued", event.IncidentID, event); err != nil {
+					t.Fatal(err)
+				}
+				if acknowledged {
+					if err := s.Append("report_delivered", event.IncidentID, map[string]string{"id": event.ID}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Reopen without saving the in-memory marker/outbox, reproducing a
+				// crash between the audit append and the next state checkpoint.
+				if err := s.Close(); err != nil {
+					t.Fatal(err)
+				}
+				s, recovered, err := Open(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				if !recovered.Incidents["reported"].ReportedActivity || recovered.Incidents["quiet"].ReportedActivity {
+					t.Fatalf("reported activity did not recover for the matching incident: %+v", recovered.Incidents)
+				}
+				wantPending := 1
+				if acknowledged {
+					wantPending = 0
+				}
+				if len(recovered.Outbox) != wantPending || recovered.Incidents["reported"].Status != "pending" {
+					t.Fatalf("report recovery changed delivery completion or interrupted work: %+v", recovered)
+				}
+			})
+		}
+	}
+}
+
+func TestLocalOnlyEventsDoNotRecoverReportedActivity(t *testing.T) {
+	dir := t.TempDir()
+	s, state, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Incidents["quiet"] = &Incident{ID: "quiet", Status: "pending"}
+	if err := s.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append("event", "quiet", protocol.Event{ID: "local", IncidentID: "quiet", Type: "action_finished"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []protocol.Event{
+		{ID: "lifecycle", Type: "started"},
+		{ID: "retired", IncidentID: "no-longer-retained", Type: "action_finished"},
+	} {
+		if err := s.Append("report_queued", event.IncidentID, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, recovered, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if recovered.Incidents["quiet"].ReportedActivity || len(recovered.Incidents) != 1 {
+		t.Fatalf("local or unrelated event created reported activity: %+v", recovered.Incidents)
+	}
+}
+
 func TestIncompleteFinalAuditWriteIsPreservedAndRecovered(t *testing.T) {
 	dir := t.TempDir()
 	s, state, err := Open(dir)

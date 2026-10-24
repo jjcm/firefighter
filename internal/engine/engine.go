@@ -46,6 +46,8 @@ type Engine struct {
 	Redact     func(string) string
 	Log        *slog.Logger
 	Hostname   string
+	Version    string
+	RunID      string
 	mu         sync.Mutex
 	workMu     sync.Mutex
 	reportMu   sync.Mutex
@@ -77,11 +79,11 @@ func (e *Engine) signal() {
 	default:
 	}
 }
-func (e *Engine) Run(ctx context.Context) error {
+func (e *Engine) Run(ctx context.Context) (runErr error) {
 	e.defaults()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if err := e.emit("started", "", "Autonomous host defense started", map[string]interface{}{"observe": e.Config.Observe}); err != nil {
+	if err := e.startLifecycle(); err != nil {
 		return err
 	}
 	errCh := make(chan error, len(e.Sources)+1)
@@ -130,7 +132,11 @@ func (e *Engine) Run(ctx context.Context) error {
 			}
 		}
 	}()
-	defer func() { cancel(); wg.Wait() }()
+	defer func() {
+		cancel()
+		wg.Wait()
+		runErr = errors.Join(runErr, e.stopLifecycle(runErr))
+	}()
 	ticker := time.NewTicker(config.Seconds(e.Config.TickSeconds))
 	defer ticker.Stop()
 	for {
@@ -347,6 +353,7 @@ func (e *Engine) ProcessOne(ctx context.Context) (bool, error) {
 	e.processed++
 	in.Status = "running"
 	in.Attempts++
+	in.AttemptChanged = false
 	in.UpdatedAt = now
 	if err := e.Store.Save(e.State); err != nil {
 		e.mu.Unlock()
@@ -384,8 +391,8 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 	}
 	verified := false
 	for round := 0; round < e.Config.MaxRounds; round++ {
-		if ctx.Err() != nil {
-			return e.finish(in, "deferred", "Assessment time limit reached or daemon stopping; further work scheduled", ctx.Err(), nil)
+		if summary, cause := assessmentInterruption(parent, ctx); cause != nil {
+			return e.finish(in, "deferred", summary, cause, nil)
 		}
 		snapshot, inventoryInfo, err := e.inventory(ctx, round == 0 && in.Item.Source == "local-host")
 		if err != nil {
@@ -399,6 +406,9 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 		req := protocol.Request{IncidentID: in.ID, Host: snapshot, Intel: in.Item, History: history, Memory: memory, Instructions: instructions, RotationHooks: e.Config.RotationHooks, RecoveryNotes: notes, RoundsRemaining: e.Config.MaxRounds - round}
 		decision, err := e.Planner.Decide(ctx, req)
 		if err != nil {
+			if summary, cause := assessmentInterruption(parent, ctx); cause != nil {
+				return e.finish(in, "deferred", summary, cause, nil)
+			}
 			return e.finish(in, "deferred", "Planner unavailable; assessment will retry", err, nil)
 		}
 		if len(decision.Actions) > e.Config.MaxActionsPerRound {
@@ -506,6 +516,9 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 			}
 		}
 	}
+	if summary, cause := assessmentInterruption(parent, ctx); cause != nil {
+		return e.finish(in, "deferred", summary, cause, nil)
+	}
 	return e.finish(in, "deferred", "Assessment round budget reached; further work scheduled", errors.New("round budget exhausted"), nil)
 }
 func (e *Engine) execute(ctx context.Context, in *store.Incident, turn int, action protocol.Action) (protocol.ActionResult, error) {
@@ -528,6 +541,15 @@ func (e *Engine) executePhase(ctx context.Context, in *store.Incident, turn int,
 	details := map[string]interface{}{"action_id": action.ID, "mutates": action.Mutates, "mutates_source": mutatesSource, "phase": phase}
 	if parentActionID != "" {
 		details["parent_action_id"] = parentActionID
+		for _, parentAction := range in.History[turn].Decision.Actions {
+			if parentAction.ID == parentActionID {
+				details["parent_mutates"] = parentAction.Mutates
+				break
+			}
+		}
+	}
+	if phase == "verification" {
+		details["verification_scope"] = "action_check"
 	}
 	e.mu.Lock()
 	err := e.Store.Append("action_intent", in.ID, e.cleanDecision(protocol.Decision{Actions: []protocol.Action{action}}).Actions[0])
@@ -555,9 +577,27 @@ func (e *Engine) executePhase(ctx context.Context, in *store.Incident, turn int,
 		return result, err
 	}
 	in.History[turn].Results = append(in.History[turn].Results, result)
+	if action.Mutates && !result.Skipped {
+		in.AttemptChanged = true
+	}
 	verified := phase == "verification" && result.ExitCode == 0 && result.Error == "" && !result.TimedOut && !result.Skipped
 	details["exit_code"], details["timed_out"], details["error"] = result.ExitCode, result.TimedOut, result.Error
 	details["skipped"], details["verified"] = result.Skipped, verified
+	if !result.StartedAt.IsZero() && !result.FinishedAt.Before(result.StartedAt) {
+		details["duration_ms"] = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
+	}
+	if phase == "verification" {
+		outcome := "failed"
+		switch {
+		case result.Skipped:
+			outcome = "skipped"
+		case result.TimedOut:
+			outcome = "timed_out"
+		case verified:
+			outcome = "passed"
+		}
+		details["check_outcome"] = outcome
+	}
 	if err = e.emitLocked("action_finished", in.ID, action.Reason, details); err != nil {
 		return result, err
 	}
@@ -570,15 +610,14 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 	in.UpdatedAt = time.Now().UTC()
 	in.NextAttempt = in.UpdatedAt.Add(config.Seconds(e.Config.RecheckSeconds))
 	in.LastError = ""
-	changed := false
+	changed := in.AttemptChanged
 	for _, turn := range in.History {
 		for _, action := range turn.Decision.Actions {
-			if !action.Mutates {
-				continue
-			}
 			// Planned but unexecuted changes (including observe mode) are not changes.
 			for _, result := range turn.Results {
-				if result.ActionID == action.ID && !result.Skipped {
+				mutationRan := action.Mutates && result.ActionID == action.ID
+				rollbackRan := len(action.Rollback) > 0 && result.ActionID == action.ID+"-rollback"
+				if (mutationRan || rollbackRan) && !result.Skipped {
 					changed = true
 				}
 			}
@@ -595,6 +634,13 @@ func (e *Engine) finish(in *store.Incident, status, summary string, cause error,
 		in.NextAttempt = in.UpdatedAt.Add(backoff(in.Attempts, 30*time.Second, 15*time.Minute))
 	}
 	details := map[string]interface{}{"status": status, "error": in.LastError, "source": in.Item.Source, "changed": changed, "verified": status == "completed" && decision != nil && decision.Assessment == "remediated"}
+	details["changed_scope"] = "retained_incident_history"
+	details["changed_this_attempt"] = in.AttemptChanged
+	details["had_reported_activity"] = in.ReportedActivity
+	details["remediation_verified"] = details["verified"]
+	if reason := interruptionReason(cause); reason != "" {
+		details["interruption_reason"] = reason
+	}
 	if !in.NextAttempt.IsZero() {
 		details["next_assessment"] = in.NextAttempt
 	}
@@ -629,8 +675,26 @@ func (e *Engine) emitLocked(typ, id, summary string, details map[string]interfac
 		return err
 	}
 	event := protocol.Event{ID: hex.EncodeToString(b[:]), Time: time.Now().UTC(), Host: e.Redact(e.Hostname), Type: typ, IncidentID: e.Redact(id), Summary: e.Redact(summary)}
+	event.Details = map[string]interface{}{}
 	if details != nil {
 		event.Details = cleanReportValue(details, e.Redact).(map[string]interface{})
+	}
+	if e.RunID != "" {
+		event.Details["run_id"] = e.Redact(e.RunID)
+	}
+	if e.Version != "" {
+		event.Details["version"] = e.Redact(e.Version)
+	}
+	if in := e.State.Incidents[id]; in != nil {
+		event.Details["advisory_id"] = e.Redact(in.Item.ID)
+		event.Details["advisory_title"] = e.Redact(in.Item.Title)
+		event.Details["cves"] = cleanStrings(in.Item.CVEs, e.Redact)
+		event.Details["source"] = e.Redact(in.Item.Source)
+		event.Details["attempt"] = in.Attempts
+		event.Details["assessment_scope"] = "advisory"
+		if in.Item.Source == "local-host" {
+			event.Details["assessment_scope"] = "host"
+		}
 	}
 	auditType := "event"
 	shouldSend := e.Reporter != nil
@@ -644,6 +708,9 @@ func (e *Engine) emitLocked(typ, id, summary string, details map[string]interfac
 		return err
 	}
 	if shouldSend {
+		if in := e.State.Incidents[id]; in != nil {
+			in.ReportedActivity = true
+		}
 		e.State.Outbox = append(e.State.Outbox, store.Delivery{Event: event})
 		select {
 		case e.reportWake <- struct{}{}:

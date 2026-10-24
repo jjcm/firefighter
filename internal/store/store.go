@@ -30,15 +30,17 @@ type SourceState struct {
 	Failures    int       `json:"failures"`
 }
 type Incident struct {
-	ID            string          `json:"id"`
-	Item          intel.Item      `json:"item"`
-	Status        string          `json:"status"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	NextAttempt   time.Time       `json:"next_attempt"`
-	Attempts      int             `json:"attempts"`
-	History       []protocol.Turn `json:"history"`
-	RecoveryNotes []string        `json:"recovery_notes,omitempty"`
-	LastError     string          `json:"last_error,omitempty"`
+	ID               string          `json:"id"`
+	Item             intel.Item      `json:"item"`
+	Status           string          `json:"status"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+	NextAttempt      time.Time       `json:"next_attempt"`
+	Attempts         int             `json:"attempts"`
+	History          []protocol.Turn `json:"history"`
+	RecoveryNotes    []string        `json:"recovery_notes,omitempty"`
+	LastError        string          `json:"last_error,omitempty"`
+	ReportedActivity bool            `json:"reported_activity,omitempty"`
+	AttemptChanged   bool            `json:"attempt_changed,omitempty"`
 }
 type Delivery struct {
 	Event       protocol.Event `json:"event"`
@@ -146,6 +148,12 @@ func Open(dir string) (*Store, *State, error) {
 			var event protocol.Event
 			if err := json.Unmarshal(r.Data, &event); err != nil || event.ID == "" {
 				return fail(errors.New("invalid queued report in audit"))
+			}
+			// The report append is durable before its state checkpoint. Recover
+			// this marker even if delivery was later acknowledged: a reported
+			// failure still needs its eventual assessment closure after restart.
+			if in := st.Incidents[event.IncidentID]; in != nil {
+				in.ReportedActivity = true
 			}
 			queued[event.ID] = event
 		case "report_delivered":

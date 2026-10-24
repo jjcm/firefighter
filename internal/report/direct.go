@@ -170,16 +170,33 @@ func (s *directSender) ShouldSend(event protocol.Event) bool {
 	problem, _ := event.Details["error"].(string)
 	assessment, _ := event.Details["assessment"].(string)
 	switch event.Type {
-	case "started", "report_test", "source_error", "source_recovered":
+	case "started", "stopped", "report_test", "source_error", "source_recovered":
 		return true
 	case "assessment_started":
 		return source == "local-host"
 	case "action_started":
 		return mutates || phase == "rollback"
 	case "action_finished":
+		timedOut, _ := event.Details["timed_out"].(bool)
+		skipped, _ := event.Details["skipped"].(bool)
+		exit, hasExit := integer(event.Details["exit_code"])
+		if problem != "" || timedOut || skipped || hasExit && exit != 0 {
+			return true
+		}
+		// A passing inventory/probe check is not a remediation update. Its
+		// assessment remains in the local audit; failures still need a report.
+		if phase == "verification" {
+			parentMutates, parentKnown := event.Details["parent_mutates"].(bool)
+			verified, _ := event.Details["verified"].(bool)
+			outcome, _ := event.Details["check_outcome"].(string)
+			if parentKnown && !parentMutates && verified && hasExit && exit == 0 && (outcome == "" || outcome == "passed") {
+				return false
+			}
+		}
 		return mutates || phase == "verification" || phase == "rollback"
 	case "assessment_finished":
-		if source == "local-host" || changed || status == "deferred" || problem != "" {
+		reported, _ := event.Details["had_reported_activity"].(bool)
+		if source == "local-host" || changed || reported || status == "deferred" || problem != "" {
 			return true
 		}
 		switch assessment {
@@ -199,13 +216,13 @@ func (s *directSender) Send(ctx context.Context, event protocol.Event) error {
 	var payload any
 	switch s.kind {
 	case "slack":
-		payload = map[string]any{"blocks": []any{map[string]any{"type": "section", "text": map[string]any{"type": "plain_text", "text": limitText(message, 2900), "emoji": false}}}, "unfurl_links": false, "unfurl_media": false}
+		payload = map[string]any{"blocks": []any{map[string]any{"type": "section", "text": map[string]any{"type": "plain_text", "text": channelText(message, 2900), "emoji": false}}}, "unfurl_links": false, "unfurl_media": false}
 	case "discord":
-		payload = map[string]any{"content": limitText(discordPlain(message), 2000), "allowed_mentions": map[string]any{"parse": []string{}}, "flags": 4}
+		payload = map[string]any{"content": channelText(discordPlain(message), 2000), "allowed_mentions": map[string]any{"parse": []string{}}, "flags": 4}
 	case "telegram":
-		payload = map[string]any{"chat_id": s.chatID, "text": limitText(message, 4096), "link_preview_options": map[string]any{"is_disabled": true}}
+		payload = map[string]any{"chat_id": s.chatID, "text": channelText(message, 4096), "link_preview_options": map[string]any{"is_disabled": true}}
 	case "grokbot":
-		payload = map[string]any{"source": "firefighter", "message": limitText(message, 4096), "event": event}
+		payload = map[string]any{"source": "firefighter", "message": channelText(message, 4096), "event": event}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

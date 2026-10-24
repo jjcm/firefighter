@@ -102,7 +102,7 @@ func TestDirectProvidersNativePayloadAndAcknowledgement(t *testing.T) {
 				if kind != "grokbot" && r.Header.Get("Authorization") != "" {
 					t.Error("unnecessary bearer credential attached")
 				}
-				for _, expected := range []string{"fixture-host", "event-fixture", "Verification: passed", "Exit: 0", "Parent action: restart-sshd-patched", "verification expected to be read-only", "declaration, not enforcement"} {
+				for _, expected := range []string{"fixture-host", "event-fixture", "Check: passed", "Exit: 0", "Parent action: restart-sshd-patched", "verification expected to be read-only", "declaration, not enforcement"} {
 					if kind == "discord" {
 						expected = discordPlain(expected)
 					}
@@ -124,6 +124,50 @@ func TestDirectProvidersNativePayloadAndAcknowledgement(t *testing.T) {
 				t.Fatalf("sent %d requests", calls)
 			}
 		})
+	}
+}
+
+func TestDirectGrokStructuredContextAndBoundedEvidence(t *testing.T) {
+	s := directFixture(t, "grokbot")
+	event := protocol.Event{ID: "event-context", IncidentID: "incident-context", Type: "assessment_finished", Host: "fixture-host", Summary: "No applicable software found", Details: map[string]any{
+		"status": "completed", "assessment": "not_affected", "assessment_scope": "advisory", "had_reported_activity": true,
+		"run_id": "run-456", "version": "revision-456", "attempt": 2,
+		"advisory_id": "notice-456", "advisory_title": "Advisory " + strings.Repeat("🙂", 200), "cves": []string{"CVE-2026-12345"},
+		"remediation_verified": false, "changed": true, "changed_this_attempt": false, "changed_scope": "retained_incident_history",
+		"terminal_reason": "assessment_complete", "next_assessment": "2026-10-24T14:00:00Z",
+		"follow_up": strings.Repeat("Review locally; ", 80), "evidence": []string{strings.Repeat("🙂", 250), "Authorization: Bearer private-fixture-value"},
+		"output": "raw-output-must-stay-local", "environment": "raw-env-must-stay-local",
+	}}
+	calls := 0
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Message string         `json:"message"`
+			Event   protocol.Event `json:"event"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		details := payload.Event.Details
+		if payload.Event.ID != event.ID || details["run_id"] != "run-456" || details["advisory_id"] != "notice-456" || details["attempt"] != float64(2) || details["remediation_verified"] != false || details["had_reported_activity"] != true || details["assessment_scope"] != "advisory" || len(details["cves"].([]any)) != 1 || details["clipped_fields"] == nil {
+			t.Fatalf("wire context is incomplete: %+v", details)
+		}
+		for _, forbidden := range []string{"private-fixture-value", "raw-output-must-stay-local", "raw-env-must-stay-local"} {
+			if strings.Contains(string(body), forbidden) {
+				t.Errorf("secret or raw execution data escaped: %s", forbidden)
+			}
+		}
+		if len(body) > 32<<10 || len(utf16.Encode([]rune(payload.Message))) > 4096 {
+			t.Fatalf("report exceeded payload/message bound: %d bytes", len(body))
+		}
+		return response(200, "accepted"), nil
+	})
+	if err := s.Send(context.Background(), event); err != nil || calls != 1 {
+		t.Fatalf("reported activity did not receive completion: calls=%d error=%v", calls, err)
 	}
 }
 
@@ -192,15 +236,30 @@ func TestDirectEventFilterAndHistoricalOutboxSuppression(t *testing.T) {
 		details map[string]any
 		want    bool
 	}{
-		{"started", nil, true}, {"report_test", nil, true}, {"source_error", nil, true}, {"source_recovered", nil, true},
+		{"started", nil, true}, {"stopped", nil, true}, {"report_test", nil, true}, {"source_error", nil, true}, {"source_recovered", nil, true},
 		{"assessment_started", map[string]any{"source": "local-host"}, true}, {"assessment_started", map[string]any{"source": "nvd"}, false},
 		{"assessment_finished", map[string]any{"source": "local-host", "assessment": "not_affected"}, true},
 		{"assessment_finished", map[string]any{"changed": true}, true}, {"assessment_finished", map[string]any{"status": "deferred"}, true}, {"assessment_finished", map[string]any{"error": "failed"}, true},
 		{"assessment_finished", map[string]any{"assessment": "exposed"}, true}, {"assessment_finished", map[string]any{"assessment": "suspected_compromise"}, true}, {"assessment_finished", map[string]any{"assessment": "confirmed_compromise"}, true}, {"assessment_finished", map[string]any{"assessment": "remediated"}, true},
 		{"assessment_finished", map[string]any{"status": "completed", "assessment": "not_affected"}, false}, {"assessment_finished", nil, false},
+		{"assessment_finished", map[string]any{"status": "completed", "assessment": "not_affected", "had_reported_activity": true}, true},
 		{"action_started", map[string]any{"mutates": true}, true}, {"action_finished", map[string]any{"mutates": true}, true},
 		{"action_started", map[string]any{"phase": "verification"}, false}, {"action_started", map[string]any{"phase": "rollback"}, true}, {"action_finished", map[string]any{"phase": "verification"}, true}, {"action_finished", map[string]any{"phase": "rollback"}, true},
 		{"action_finished", map[string]any{"mutates": false, "phase": "action"}, false}, {"source_polled", nil, false}, {"memory_updated", nil, false},
+		{"action_finished", map[string]any{"mutates": false, "phase": "action", "exit_code": 0}, false},
+		{"action_finished", map[string]any{"mutates": false, "phase": "action", "exit_code": 1}, true},
+		{"action_finished", map[string]any{"mutates": false, "phase": "action", "exit_code": -1}, true},
+		{"action_finished", map[string]any{"mutates": false, "phase": "action", "error": "exec failed"}, true},
+		{"action_finished", map[string]any{"mutates": false, "phase": "action", "timed_out": true}, true},
+		{"action_finished", map[string]any{"mutates": false, "phase": "action", "skipped": true}, true},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": false, "verified": true, "exit_code": 0}, false},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": false, "verified": true, "exit_code": 1}, true},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": false, "verified": true, "exit_code": 0, "check_outcome": "failed"}, true},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": false, "verified": false}, true},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": true, "verified": true}, true},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": false, "verified": true, "error": "failed"}, true},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": false, "verified": true, "timed_out": true}, true},
+		{"action_finished", map[string]any{"phase": "verification", "parent_mutates": false, "verified": true, "skipped": true}, true},
 	} {
 		event := protocol.Event{Type: tc.typ, Details: tc.details}
 		if got := s.ShouldSend(event); got != tc.want {
@@ -302,7 +361,7 @@ func TestReportingRateLimits(t *testing.T) {
 func TestDirectOutputBoundsRedactionAndControlCharacters(t *testing.T) {
 	for _, kind := range []string{"slack", "discord", "telegram", "grokbot"} {
 		s := directFixture(t, kind)
-		event := protocol.Event{ID: "event-constant", Type: "report_test", Host: "host\nFAKE STATUS\u202e", Summary: strings.Repeat("🙂*_", 3000) + " secret-fixture-routine-key", Details: map[string]any{"evidence": []string{strings.Repeat("e", 5000), strings.Repeat("e", 5000), strings.Repeat("e", 5000), "fourth-omitted"}, "error": strings.Repeat("error", 5000), "output": "must-not-appear"}}
+		event := protocol.Event{ID: "event-constant", Type: "report_test", Host: "host\nFAKE STATUS\u202e", Summary: strings.Repeat("🙂*_", 3000) + " secret-fixture-routine-key", Details: map[string]any{"evidence": []string{strings.Repeat("e", 5000), strings.Repeat("e", 5000), strings.Repeat("e", 5000), "fourth-included", "fifth-included", "sixth-included", "seventh-omitted"}, "error": strings.Repeat("error", 5000), "output": "must-not-appear"}}
 		s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -322,7 +381,7 @@ func TestDirectOutputBoundsRedactionAndControlCharacters(t *testing.T) {
 			case "grokbot":
 				text = payload["message"].(string)
 			}
-			if !utf8.ValidString(text) || len(utf16.Encode([]rune(text))) > maxSize || !strings.Contains(text, "event") || strings.Contains(text, "\u202e") || strings.Contains(text, "must-not-appear") || strings.Contains(text, "fourth-omitted") {
+			if !utf8.ValidString(text) || len(utf16.Encode([]rune(text))) > maxSize || !strings.Contains(text, "event") || strings.Contains(text, "\u202e") || strings.Contains(text, "must-not-appear") || strings.Contains(text, "seventh-omitted") {
 				t.Fatal("unsafe or oversized formatted output")
 			}
 			return response(200, map[string]string{"slack": "ok", "discord": `{"id":"1"}`, "telegram": `{"ok":true}`, "grokbot": ""}[kind]), nil
@@ -391,13 +450,13 @@ func TestReportDistinguishesChangesVerificationAndEventTime(t *testing.T) {
 		details      map[string]any
 		want, absent string
 	}{
-		{"successful change", map[string]any{"phase": "action", "mutates": true, "exit_code": 0}, "Change command finished; verification pending", "Verification: passed"},
+		{"successful change", map[string]any{"phase": "action", "mutates": true, "exit_code": 0}, "Change command finished; verification pending", "Check: passed"},
 		{"failed change", map[string]any{"phase": "action", "mutates": true, "exit_code": 1}, "Exit: 1", "verification pending"},
 		{"timed out change", map[string]any{"phase": "action", "mutates": true, "exit_code": 0, "timed_out": true}, "Command timed out", "verification pending"},
 		{"skipped change", map[string]any{"phase": "action", "mutates": true, "exit_code": 0, "skipped": true}, "Command was skipped", "verification pending"},
 		{"execution error", map[string]any{"phase": "action", "mutates": true, "exit_code": 0, "error": "exec failed"}, "Error: exec failed", "verification pending"},
-		{"successful verification", map[string]any{"phase": "verification", "verified": true, "exit_code": 0}, "Verification: passed", "Verification: failed"},
-		{"failed verification", map[string]any{"phase": "verification", "verified": false, "exit_code": 1}, "Verification: failed", "Verification: passed"},
+		{"successful verification", map[string]any{"phase": "verification", "verified": true, "exit_code": 0}, "Check: passed", "Check: failed"},
+		{"failed verification", map[string]any{"phase": "verification", "verified": false, "exit_code": 1}, "Check: failed", "Check: passed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			event := safeEvent(protocol.Event{ID: "audit-event-id", Time: when, Host: "fixture", Type: "action_finished", Summary: "Targeted local response", Details: tc.details}, func(s string) string { return s })

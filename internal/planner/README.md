@@ -34,6 +34,12 @@ Both adapters bound request/response size and runtime. Decisions reject unknown 
 
 The prompt directs operating-system and package revision checks, targeted signed package updates, source changes with tests, service and compromise checks, evidence preservation, and configured credential rotation. It treats posts, advisories and host output as untrusted facts, separates exposure from compromise, and forbids treating a clean scan as a clean-host guarantee. These instructions are not an OS sandbox: the root responder still executes model-authored commands under the owner's autonomy authorization.
 
+Incoming-notice assessments stay scoped to the affected product. Unrelated posture findings go into follow-up and memory for the periodic host review; they do not turn an inapplicable CVE into an exposed one. Recent successful observations can be reused across related notices when their time, deployment coverage, and assumptions still apply. Expired or incomplete evidence, relevant changes, and contradictions need targeted refresh. Package-list absence alone does not rule out source or container deployments.
+
+Read-only observations normally leave `verify` empty and return their findings for the next decision. Verification belongs to mutations and must assert the fix and service health. The prompt distinguishes expected no-match results from command failures, including the observed failures from querying an absent package or searching a nonexistent directory. Neither the planner nor runner globally turns exit status 1 into success. A missing directory only establishes that path is absent; a failed enumeration cannot establish product absence. These are model instructions, not static shell analysis or a guarantee that generated commands follow them; command output and failures remain available to the next decision and local audit.
+
+Cancellation and deadlines while reading an API response retain their context error so a controlled daemon stop does not appear as an unexplained provider failure. Other body-read errors remain opaque to avoid leaking provider output.
+
 Validation uses deterministic local fixtures:
 
 ```sh
