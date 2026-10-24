@@ -184,7 +184,7 @@ Direct queries to those Cloudflare nameservers return edge addresses
 should resolve to Cloudflare's edge addresses, which may change, rather than the
 origin IP.
 
-At approximately 13:58 UTC (21:08 Bangkok time) on October 24, 2026, direct queries
+At approximately 13:58 UTC (20:58 Bangkok time) on October 24, 2026, direct queries
 from both the Mac and hub to authoritative `.sh` nameservers still returned
 `NXDOMAIN`. The remaining blocker is registry publication of the delegation,
 despite the active registration and configured Cloudflare zone. The existing IP
