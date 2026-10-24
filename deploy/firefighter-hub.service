@@ -1,0 +1,42 @@
+[Unit]
+Description=Firefighter signed advisory broadcast hub
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=firefighter-hub
+Group=firefighter-hub
+EnvironmentFile=-/etc/firefighter-hub/firefighter-hub.env
+ExecStart=/usr/local/bin/firefighter-hub run --config /etc/firefighter-hub/config.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077
+StateDirectory=firefighter-hub
+StateDirectoryMode=0700
+WorkingDirectory=/
+StandardOutput=journal
+StandardError=journal
+
+# This service only ingests and signs public advisory data. It has no host
+# remediation powers and does not need the responder daemon's root access.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +52,8 @@ type Source struct {
 	TokenEnv        string `json:"token_env,omitempty"`
 	Query           string `json:"query,omitempty"`
 	Trust           string `json:"trust,omitempty"`
+	PublicKey       string `json:"public_key,omitempty"`
+	CAFile          string `json:"ca_file,omitempty"`
 }
 type Report struct {
 	URL            string `json:"url"`
@@ -146,6 +150,14 @@ func (c Config) Validate() error {
 		case "rss":
 			if s.URL == "" {
 				return errors.New("RSS source requires URL")
+			}
+		case "broadcast":
+			key, err := base64.StdEncoding.Strict().DecodeString(s.PublicKey)
+			if s.URL == "" || err != nil || len(key) != ed25519.PublicKeySize {
+				return errors.New("broadcast source requires URL and a pinned base64 Ed25519 public_key")
+			}
+			if s.CAFile != "" && !filepath.IsAbs(s.CAFile) {
+				return errors.New("broadcast ca_file must be an absolute PEM file path")
 			}
 		default:
 			return fmt.Errorf("unknown source type %q", s.Type)

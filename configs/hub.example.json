@@ -1,0 +1,40 @@
+{
+  "listen": "127.0.0.1:8090",
+  "state_dir": "/var/lib/firefighter-hub",
+  "website_dir": "/opt/firefighter/web",
+  "retention_days": 7,
+  "max_notices": 100000,
+  "poll_timeout_seconds": 900,
+  "requests_per_minute": 300,
+  "sources": [
+    {
+      "name": "ubuntu-usn",
+      "type": "rss",
+      "url": "https://ubuntu.com/security/notices/rss.xml",
+      "interval_seconds": 120,
+      "lookback_hours": 0
+    },
+    {
+      "name": "cisa-kev",
+      "type": "kev",
+      "interval_seconds": 300,
+      "lookback_hours": 0
+    },
+    {
+      "name": "nvd",
+      "type": "nvd",
+      "interval_seconds": 300,
+      "lookback_hours": 24,
+	  "page_size": 500,
+      "token_env": "NVD_API_KEY"
+    },
+    {
+      "name": "x",
+      "type": "x",
+      "interval_seconds": 60,
+      "lookback_hours": 1,
+      "token_env": "X_BEARER_TOKEN",
+      "query": "(CVE OR \"zero-day\" OR \"0day\" OR \"security advisory\" OR \"remote code execution\" OR \"actively exploited\") -is:retweet"
+    }
+  ]
+}

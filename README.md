@@ -2,11 +2,15 @@
 
 An autonomous, API-driven incident-response daemon for **Ubuntu**, written in Go. It watches vulnerability disclosures, investigates the local host, executes fixes as root, checks the result, and reports to Grok Bot. **There are no runtime approval prompts.**
 
+[Public notice board](https://45.76.243.18/) · [Source health](https://45.76.243.18/api/v1/status) · [Deployment guide](docs/deployment.md)
+
+The shared hub ingests disclosures once and distributes signed notices to subscribed servers. Each server independently inventories its own host, asks its configured model what to do, and performs local remediation. **The hub distributes advisory data only; it has no remote-command channel.** Signatures authenticate the publisher, while notice text remains untrusted input. The board reports current source health; X support being configured does not mean X access is working.
+
 This is a working initial implementation with fixture-tested execution and recovery paths. It has not been validated against a live compromised production server. A patch or a clean scanner result is never treated as proof that an intrusion did not occur.
 
 ## What it does
 
-- **Intake:** X/Twitter recent search, Ubuntu Security Notices, CISA's Known Exploited Vulnerabilities catalog, NVD, and configurable vendor RSS/Atom feeds. Social disclosures without CVE IDs are included. Pollers run independently of long scans and patches.
+- **Intake:** a central hub supports X/Twitter recent search, Ubuntu Security Notices, CISA's Known Exploited Vulnerabilities catalog, NVD, and configurable vendor RSS/Atom feeds. Clients verify signed notice batches using a pinned Ed25519 public key. Standalone direct polling is also available. Social disclosures without CVE IDs are included, and intake runs independently of long scans and patches.
 - **Assessment:** inventories packages, processes, listeners, services, containers, and available scanners; asks the model to compare actual exposure and CVE-specific evidence. It distinguishes `unknown`, `not_affected`, `exposed`, `suspected_compromise`, `confirmed_compromise`, and `remediated`.
 - **Response:** the model can execute arbitrary local root commands, update packages, edit application code, run tests/scans, restart services, contain an incident, and invoke credential-rotation hooks. Mutating plans require a verification command. Failed actions stop the batch, run a supplied rollback, and trigger reassessment.
 - **Continuous operation:** systemd restart, independent intake and reporting workers, serialized mutations, deadline/process-group cancellation, persistent queues/cursors, interrupted-action reassessment, fair scheduling, and a durable notification outbox.
@@ -28,16 +32,35 @@ sudo ./deploy/install.sh
 
 The installer installs binaries, configuration, and services. Existing configuration and secrets are preserved. It does not start an unconfigured daemon.
 
+For the shared service, replace the generated `sources` array with this fragment. Obtain the public key from the hub operator and verify it independently before inserting it; do not accept a replacement key from a notice response.
+
+```json
+{
+  "sources": [
+    {
+      "name": "central-notices",
+      "type": "broadcast",
+      "url": "https://45.76.243.18/api/v1/notices",
+      "public_key": "YOUR_VERIFIED_BASE64_ED25519_PUBLIC_KEY",
+      "interval_seconds": 15,
+      "lookback_hours": 0
+    }
+  ]
+}
+```
+
+A client configured this way needs no X or NVD credential and performs no direct upstream feed polling. Periodic local host assessment still runs independently of incoming notices. A private hub may use an optional absolute `ca_file` path; the public deployment uses a publicly trusted IP certificate and requires no custom CA.
+
 Set credentials in `/etc/firefighter/firefighter.env` (installed as root-only, mode `0600`):
 
 ```text
 OPENAI_API_KEY=<your API key>
-X_BEARER_TOKEN=<X API bearer token with recent-search access>
-NVD_API_KEY=<optional NVD key>
 FIREFIGHTER_REPORT_SECRET=<random secret of at least 32 characters, if reporting is enabled>
 ```
 
 Configure `/etc/firefighter/config.json`. The generated default is [here](configs/firefighter.example.json). API access is the primary backend. The default model is `gpt-6.1-sol`; set `llm.model` to a model available to your account. A different OpenAI-compatible provider can use its own `base_url`, `model`, and `api_key_env`. Set `json_mode: true` only for a provider that supports JSON-object responses but not the strict JSON schema format.
+
+The deployment guide includes the selected OpenRouter configuration and its `OPENROUTER_API_KEY` environment variable. Use the credential name matching your own provider configuration. If using standalone direct polling, add `X_BEARER_TOKEN` and optionally `NVD_API_KEY` to the environment file instead of configuring the shared broadcast source.
 
 Configure application locations, deployment commands, service-health checks, and recovery priorities in `instructions`. For example:
 
@@ -60,7 +83,7 @@ sudo systemctl enable --now firefighter
 sudo journalctl -u firefighter -f
 ```
 
-`doctor` checks configuration and credential presence without making remote calls; it does not verify provider access. Missing X credentials are an explicit degraded-source event, while other sources keep working. Missing LLM credentials prevent startup. API failures during operation produce retryable assessments and reports.
+`doctor` checks configuration and credential presence without making remote calls; it does not verify provider access. Broadcast-only clients do not require X credentials. In direct-polling mode, missing X credentials are an explicit degraded-source event while other sources keep working. Central upstream health is reported on the hub's status endpoint and board; a successful client poll establishes signed-feed availability, not the health of every upstream source. Missing LLM credentials prevent startup. API failures during operation produce retryable assessments and reports.
 
 To inspect activity:
 
@@ -112,7 +135,9 @@ The model is instructed to contain the theft path before rotating keys, preserve
 
 ## Polling, backlog, and recovery
 
-Default polling is X every 60 seconds, Ubuntu notices every 120 seconds, and KEV/NVD every 300 seconds. A general host review is queued every 30 minutes. New work is normally prioritized by recency; every fifth assessment services the oldest due item. Host actions are serialized to avoid competing package transactions.
+Shared clients can poll the signed hub every 15 seconds without triggering additional X or official-source requests. Hub/direct-source defaults poll X every 60 seconds, Ubuntu notices every 120 seconds, and KEV/NVD every 300 seconds. A general host review is queued every 30 minutes. New work is normally prioritized by recency; every fifth assessment services the oldest due item. Host actions are serialized to avoid competing package transactions.
+
+Broadcast clients reject invalid signatures, unexpected command/control fields, stale timestamps, replayed sequences, and inconsistent pagination. A signed retention gap becomes an explicit local coverage-gap incident before the cursor resets to available history. See [the broadcast protocol](docs/broadcast.md) for retention and recovery details.
 
 The first KEV fetch includes its entire catalog, which can create a large backlog and substantial model usage. Set that source's `lookback_hours` to a positive value to limit the initial historical intake; host review still checks the current machine, but this setting deliberately excludes older unchanged catalog entries. X initially reads one hour and NVD one day; later polls use persistent cursors. **X recent search has a seven-day retrieval window**, so a longer outage can leave a coverage gap. RSS/Atom can only recover entries still retained in the publisher's feed.
 
@@ -128,9 +153,9 @@ The audit is append-only and **not automatically deleted or rotated**. Monitor d
 
 ```sh
 make check  # race-enabled tests + go vet
-make linux  # static Linux amd64 and arm64 binaries, including Grok Bot plugin
+make linux  # static Linux amd64/arm64 responder, notice hub, and Grok Bot binaries
 ```
 
-Tests exercise real bounded subprocesses and local HTTP fixtures, including patch/verify flow, malformed model output, API errors, feed pagination, child-process cancellation, rollback, redaction, source isolation, crash recovery, queue fairness, HMAC signatures, and durable notification retries. CI repeats tests on Ubuntu and produces Linux binaries. The tests never patch the development host or call paid APIs.
+Tests exercise real bounded subprocesses and local HTTP fixtures, including patch/verify flow, malformed model output, API errors, feed pagination, child-process cancellation, rollback, redaction, source isolation, crash recovery, queue fairness, HMAC signatures, durable notification retries, and hub-to-client signed notice delivery. CI repeats tests on Ubuntu and produces Linux binaries. The tests never patch the development host or call paid APIs.
 
-Implementation notes: [intake](internal/intel/README.md), [planner and command adapters](internal/planner/README.md), [Grok Bot plugin](plugins/grokbot/README.md), [trust model](docs/threat-model.md).
+Implementation notes: [deployment](docs/deployment.md), [shared broadcast](docs/broadcast.md), [intake](internal/intel/README.md), [planner and command adapters](internal/planner/README.md), [Grok Bot plugin](plugins/grokbot/README.md), [trust model](docs/threat-model.md).

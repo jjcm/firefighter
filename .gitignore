@@ -8,3 +8,5 @@
 *.test
 coverage.out
 !*.env.example
+/.diffui/
+/.deployment/

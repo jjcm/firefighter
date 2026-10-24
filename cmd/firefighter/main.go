@@ -179,6 +179,8 @@ func buildSources(c config.Config) ([]engine.ScheduledSource, error) {
 			}
 		case "rss":
 			source, err = intel.NewFeed(intel.FeedConfig{Name: s.Name, URL: s.URL, Trust: s.Trust})
+		case "broadcast":
+			source, err = intel.NewBroadcast(intel.BroadcastConfig{Name: s.Name, URL: s.URL, PublicKey: s.PublicKey, CAFile: s.CAFile})
 		}
 		if err != nil {
 			return nil, fmt.Errorf("source %s: %w", s.Name, err)
@@ -209,14 +211,17 @@ func doctor(c config.Config) error {
 	}
 	_, sourceErr := buildSources(c)
 	check(sourceErr == nil, "intelligence source configuration")
-	x := false
+	x, broadcast := false, false
 	for _, s := range c.Sources {
 		if s.Type == "x" {
 			x = true
 			check(os.Getenv(s.TokenEnv) != "", "X credential: "+s.TokenEnv)
 		}
+		if s.Type == "broadcast" {
+			broadcast = true
+		}
 	}
-	check(x, "X/Twitter source configured")
+	check(x || broadcast, "X/Twitter source or signed central broadcast configured")
 	if c.Report.URL != "" {
 		_, err := report.New(c.Report.URL, os.Getenv(c.Report.SecretEnv), os.Getenv(c.Report.BearerTokenEnv))
 		check(err == nil, "signed reporting destination")
