@@ -23,32 +23,15 @@
   <main id="main" class="container">
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <h1 id="hero-title">The internet is on fire.<br>Your server should<br class="desktop-break"> respond.</h1>
+        <h1 id="hero-title">The internet is on fire.<br>Let's fight fire <span>with fire.</span></h1>
         <div class="hero-actions"><a class="button button-primary" href="#get-started"><span aria-hidden="true">&gt;_</span> Deploy Firefighter</a><a class="button button-outline" href="#live-notices">Explore the network <span aria-hidden="true">↗</span></a></div>
         <p class="hero-risk">Experimental. Unproven. Runs as root. <a href="/faq/">Read the risks before installing ↗</a></p>
       </div>
-      <figure class="network" aria-labelledby="network-title">
-        <div class="network-title" id="network-title">Notices, never<br>commands.</div>
-        <svg class="network-lines" viewBox="0 0 540 430" preserveAspectRatio="none" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6"><path d="M126 215 C210 215 208 52 296 52"/><path d="M126 215 C210 215 220 151 296 151"/><path d="M126 215 C210 215 220 250 296 250"/><path d="M126 215 C210 215 208 349 296 349"/><path d="M74 89 V139"/></g><g fill="currentColor"><circle cx="281" cy="52" r="2.5"/><circle cx="288" cy="52" r="2.5"/><circle cx="281" cy="151" r="2.5"/><circle cx="288" cy="151" r="2.5"/><circle cx="281" cy="250" r="2.5"/><circle cx="288" cy="250" r="2.5"/><circle cx="281" cy="349" r="2.5"/><circle cx="288" cy="349" r="2.5"/></g></svg>
-        <div class="hub-node"><div class="hub-icon"><svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><circle cx="32" cy="28" r="5"/><path d="M32 34v20M22 18a15 15 0 0 0 0 22M42 18a15 15 0 0 1 0 22M14 10a26 26 0 0 0 0 38M50 10a26 26 0 0 1 0 38"/></g></svg></div><strong>Shared notice hub</strong><span>One intake.<br>Many independent agents.</span></div>
-        <div class="agent-list">
-          <div class="agent"><span class="server-icon" aria-hidden="true"><i></i><i></i><i></i><img src="/assets/flame.svg" alt=""></span><div><span class="agent-label">Local agent #01</span><strong>Independent decision</strong></div></div>
-          <div class="agent"><span class="server-icon" aria-hidden="true"><i></i><i></i><i></i><img src="/assets/flame.svg" alt=""></span><div><span class="agent-label">Local agent #02</span><strong>Independent decision</strong></div></div>
-          <div class="agent"><span class="server-icon" aria-hidden="true"><i></i><i></i><i></i><img src="/assets/flame.svg" alt=""></span><div><span class="agent-label">Local agent #03</span><strong>Independent decision</strong></div></div>
-          <div class="agent"><span class="server-icon" aria-hidden="true"><i></i><i></i><i></i><img src="/assets/flame.svg" alt=""></span><div><span class="agent-label">Local agent #04</span><strong>Independent decision</strong></div></div>
-        </div>
-        <div class="network-footnote">Local judgment.<br>Local action. <span aria-hidden="true">—</span></div>
+      <figure class="hero-art">
+        <img src="/assets/fight-fire-with-fire.png" width="2048" height="2048" fetchpriority="high" alt="A cartoon man fighting a room full of fire with a flamethrower.">
       </figure>
     </section>
 
-    <section class="notice-panel" id="live-notices" aria-labelledby="notices-title">
-      <div class="notice-heading"><div class="section-heading"><svg class="outline-icon" viewBox="0 0 32 36" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="24" height="32" rx="3"/><path d="M9 10h14M9 17h14M9 24h9"/></g></svg><div><h2 id="notices-title">Live notice feed</h2><p>Public disclosures from one shared intake. Every client evaluates them locally.</p></div></div><span class="feed-state" id="feed-state"><span class="status-dot pending" aria-hidden="true"></span>Connecting</span></div>
-      <div class="feed-sources" aria-label="Active vulnerability sources"><div id="source-status-list" class="source-status-list"><p class="muted">Checking source status…</p></div></div>
-      <div class="feed-controls"><div class="search-wrap"><label class="visually-hidden" for="notice-search">Search notices</label><input id="notice-search" type="search" placeholder="Search CVE, package, or advisory…" maxlength="120" autocomplete="off"><span aria-hidden="true">⌕</span></div><label class="visually-hidden" for="source-filter">Filter by source</label><select id="source-filter"><option value="">All sources</option></select><button id="refresh-notices" class="text-button" type="button">Refresh <span aria-hidden="true">↻</span></button></div>
-      <div class="notice-list" id="notice-list"><div class="feed-placeholder"><span class="loading-mark" aria-hidden="true">⌁</span><p>Connecting to the shared notice feed…</p><span>Only actual published notices appear here.</span></div></div>
-      <div class="feed-footer"><span id="feed-result" role="status" aria-live="polite">Waiting for notices</span><button id="show-more" class="text-button" type="button" hidden>Show more <span aria-hidden="true">↓</span></button></div>
-      <noscript><p class="noscript">Enable JavaScript to view the live notice feed.</p></noscript>
-    </section>
 
     <section class="process-section" id="how-it-works" aria-labelledby="process-title">
       <div class="process"><h2 class="eyebrow ruled" id="process-title">The process</h2><div class="process-steps">
@@ -67,6 +50,15 @@
       <aside class="operational-boundary"><div class="section-heading"><svg class="outline-icon" viewBox="0 0 32 36" aria-hidden="true"><path d="m16 2 12 5v11c0 8-12 16-12 16S4 26 4 18V7Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 10v10m0 4v2" stroke="currentColor" stroke-width="2"/></svg><h2 class="eyebrow ruled">Operational boundary</h2></div><h3>Runs as root.<br>Makes changes.<br>Keeps an audit trail.</h3><p>The local LLM decides what to investigate and fix. There are no runtime approval prompts. Commands, results, verification, and recovery attempts are recorded locally.</p><p>Relevant local observations are sent to your configured model API. Secret redaction is best effort.</p><p>A successful patch does not prove a host was never compromised. Backups, independent monitoring, and recovery from a trusted system still matter.</p><a class="text-link" href="https://github.com/jjcm/firefighter/blob/main/docs/threat-model.md" target="_blank" rel="noopener noreferrer">Read the trust model <span aria-hidden="true">↗</span></a></aside>
     </section>
     <section class="closing-line" aria-label="Architecture boundary"><p>One network for the signal.<br><span>Every client owns the response.</span></p></section>
+
+    <section class="notice-panel" id="live-notices" aria-labelledby="notices-title">
+      <div class="notice-heading"><div class="section-heading"><svg class="outline-icon" viewBox="0 0 32 36" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="24" height="32" rx="3"/><path d="M9 10h14M9 17h14M9 24h9"/></g></svg><div><h2 id="notices-title">Live notice feed</h2><p>Public disclosures from one shared intake. Every client evaluates them locally.</p></div></div><span class="feed-state" id="feed-state"><span class="status-dot pending" aria-hidden="true"></span>Connecting</span></div>
+      <div class="feed-sources" aria-label="Active vulnerability sources"><div id="source-status-list" class="source-status-list"><p class="muted">Checking source status…</p></div></div>
+      <div class="feed-controls"><div class="search-wrap"><label class="visually-hidden" for="notice-search">Search notices</label><input id="notice-search" type="search" placeholder="Search CVE, package, or advisory…" maxlength="120" autocomplete="off"><span aria-hidden="true">⌕</span></div><label class="visually-hidden" for="source-filter">Filter by source</label><select id="source-filter"><option value="">All sources</option></select><button id="refresh-notices" class="text-button" type="button">Refresh <span aria-hidden="true">↻</span></button></div>
+      <div class="notice-list" id="notice-list"><div class="feed-placeholder"><span class="loading-mark" aria-hidden="true">⌁</span><p>Connecting to the shared notice feed…</p><span>Only actual published notices appear here.</span></div></div>
+      <div class="feed-footer"><span id="feed-result" role="status" aria-live="polite">Waiting for notices</span><button id="show-more" class="text-button" type="button" hidden>Show more <span aria-hidden="true">↓</span></button></div>
+      <noscript><p class="noscript">Enable JavaScript to view the live notice feed.</p></noscript>
+    </section>
   </main>
 
   <footer class="container site-footer"><a class="brand" href="#"><img src="/assets/flame.svg" width="24" height="30" alt=""><span>Firefighter</span></a><a href="/faq/" class="footer-faq">FAQ</a><a href="https://github.com/jjcm/firefighter" target="_blank" rel="noopener noreferrer">Code repository <span aria-hidden="true">↗</span></a><span class="footer-motto">Autonomous / Local / Accountable</span></footer>
