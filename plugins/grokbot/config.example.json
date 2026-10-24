@@ -1,0 +1,9 @@
+{
+  "listen": "127.0.0.1:9087",
+  "signing_secret_env": "FIREFIGHTER_REPORT_SECRET",
+  "routine_url_env": "GROKBOT_ROUTINE_URL",
+  "routine_token_env": "GROKBOT_ROUTINE_TOKEN",
+  "state_path": "/var/lib/firefighter-grokbot/delivered.json",
+  "timeout_seconds": 15,
+  "include_types": ["started", "source_error", "source_recovered", "assessment_finished"]
+}

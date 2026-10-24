@@ -1,0 +1,28 @@
+[Unit]
+Description=Firefighter autonomous host incident response
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/firefighter/firefighter.env
+ExecStart=/usr/local/bin/firefighter run --config /etc/firefighter/config.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077
+StateDirectory=firefighter
+StateDirectoryMode=0700
+WorkingDirectory=/
+StandardOutput=journal
+StandardError=journal
+
+# Intentionally no filesystem sandbox: the responder must patch this host.
+# Its command budgets and journal are recovery mechanisms, not privilege isolation.
+
+[Install]
+WantedBy=multi-user.target

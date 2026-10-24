@@ -1,0 +1,10 @@
+/bin/
+/dist/
+/.state/
+/.tmp/
+.env
+.env.*
+*.env
+*.test
+coverage.out
+!*.env.example

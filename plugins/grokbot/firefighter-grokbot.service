@@ -1,0 +1,22 @@
+[Unit]
+Description=Firefighter Grok Bot reporting plugin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=firefighter-grokbot
+EnvironmentFile=/etc/firefighter/grokbot.env
+ExecStart=/usr/local/bin/firefighter-grokbot -config /etc/firefighter-grokbot/config.json
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictSUIDSGID=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
