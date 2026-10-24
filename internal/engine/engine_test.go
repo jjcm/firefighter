@@ -99,6 +99,111 @@ func readState(t *testing.T, dir string) store.State {
 	return state
 }
 
+func scheduledIncident(e *Engine, id, status string, when time.Time, assessments ...string) *store.Incident {
+	in := &store.Incident{ID: id, Item: intel.Item{ID: id, Source: "fixture", Title: id, PublishedAt: when}, Status: status, UpdatedAt: when}
+	for _, assessment := range assessments {
+		in.History = append(in.History, protocol.Turn{Decision: protocol.Decision{Assessment: assessment, Summary: "Prior fixture assessment"}})
+	}
+	e.State.Incidents[id] = in
+	return in
+}
+
+func TestKnownExposureDeferredIncidentResumesBeforeFreshDisclosure(t *testing.T) {
+	for _, assessment := range []string{"exposed", "suspected_compromise", "confirmed_compromise"} {
+		t.Run(assessment, func(t *testing.T) {
+			e, dir, _ := fixtureEngine(t)
+			now := time.Now().UTC()
+			urgent := scheduledIncident(e, "unfinished-response", "deferred", now.Add(-24*time.Hour), "unknown", assessment)
+			urgent.NextAttempt = now.Add(-time.Minute)
+			fresh := scheduledIncident(e, "unrelated-new-notice", "pending", now)
+			var selected string
+			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
+				selected = req.IncidentID
+				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+			})
+			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked {
+				t.Fatalf("resume failed: worked=%v err=%v", worked, err)
+			}
+			if selected != urgent.ID || urgent.Attempts != 1 || fresh.Attempts != 0 {
+				t.Fatalf("known exposure buried behind new intake: selected=%q urgent=%d fresh=%d", selected, urgent.Attempts, fresh.Attempts)
+			}
+			persisted := readState(t, dir)
+			if persisted.Incidents[urgent.ID].Attempts != 1 || persisted.Incidents[fresh.ID].Status != "pending" {
+				t.Fatal("resume choice was not reflected in durable incident state")
+			}
+		})
+	}
+}
+
+func TestUrgentDeferredIncidentStillWaitsForNextAttempt(t *testing.T) {
+	for _, processed := range []uint64{0, 4} {
+		t.Run(fmt.Sprintf("selection-%d", processed+1), func(t *testing.T) {
+			e, _, _ := fixtureEngine(t)
+			e.processed = processed
+			now := time.Now().UTC()
+			urgent := scheduledIncident(e, "not-yet-due", "deferred", now.Add(-24*time.Hour), "confirmed_compromise")
+			urgent.NextAttempt = now.Add(time.Hour)
+			fresh := scheduledIncident(e, "due-disclosure", "pending", now)
+			var selected string
+			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
+				selected = req.IncidentID
+				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+			})
+			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked || selected != fresh.ID {
+				t.Fatalf("future retry bypassed due-time gate: selected=%q worked=%v err=%v", selected, worked, err)
+			}
+			if worked, err := e.ProcessOne(context.Background()); err != nil || worked || urgent.Attempts != 0 || urgent.Status != "deferred" {
+				t.Fatalf("future incident was revived early: worked=%v urgent=%+v err=%v", worked, urgent, err)
+			}
+		})
+	}
+}
+
+func TestUrgentDeferredResumePreservesOldestFairnessAndTerminalExclusion(t *testing.T) {
+	e, _, _ := fixtureEngine(t)
+	e.processed = 4
+	now := time.Now().UTC()
+	terminal := scheduledIncident(e, "already-remediated", "completed", now.Add(-72*time.Hour), "confirmed_compromise", "remediated")
+	oldest := scheduledIncident(e, "oldest-generic-advisory", "pending", now.Add(-48*time.Hour))
+	urgent := scheduledIncident(e, "unfinished-exposure", "deferred", now.Add(-24*time.Hour), "exposed")
+	scheduledIncident(e, "fresh-generic-advisory", "pending", now)
+	var selected []string
+	e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
+		selected = append(selected, req.IncidentID)
+		return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+	})
+	for i := 0; i < 3; i++ {
+		if worked, err := e.ProcessOne(context.Background()); err != nil || !worked {
+			t.Fatalf("selection %d: worked=%v err=%v", i+1, worked, err)
+		}
+	}
+	if !reflect.DeepEqual(selected, []string{oldest.ID, urgent.ID, "fresh-generic-advisory"}) {
+		t.Fatalf("fairness or urgent ordering changed: %v", selected)
+	}
+	if worked, err := e.ProcessOne(context.Background()); err != nil || worked || terminal.Attempts != 0 || terminal.Status != "completed" || !terminal.NextAttempt.IsZero() {
+		t.Fatalf("terminal incident was revived: worked=%v terminal=%+v err=%v", worked, terminal, err)
+	}
+}
+
+func TestDeferredPriorityUsesLatestAssessment(t *testing.T) {
+	for _, latest := range []string{"unknown", "not_affected", "remediated", ""} {
+		t.Run("latest-"+latest, func(t *testing.T) {
+			e, _, _ := fixtureEngine(t)
+			now := time.Now().UTC()
+			scheduledIncident(e, "routine-retry", "deferred", now.Add(-time.Hour), "confirmed_compromise", latest)
+			fresh := scheduledIncident(e, "new-disclosure", "pending", now)
+			var selected string
+			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
+				selected = req.IncidentID
+				return protocol.Decision{Done: true, Assessment: "not_affected", Summary: "Fixture complete"}, nil
+			})
+			if worked, err := e.ProcessOne(context.Background()); err != nil || !worked || selected != fresh.ID {
+				t.Fatalf("historical exposure overrode latest assessment: selected=%q worked=%v err=%v", selected, worked, err)
+			}
+		})
+	}
+}
+
 func TestPollQueueLimitRetainsCursorAtomically(t *testing.T) {
 	e, dir, _ := fixtureEngine(t)
 	e.Config.MaxPendingIncidents = 1

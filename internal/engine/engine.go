@@ -316,7 +316,14 @@ func (e *Engine) ProcessOne(ctx context.Context) (bool, error) {
 			}
 			return eligible[i].UpdatedAt.Before(eligible[j].UpdatedAt)
 		}
-		// Fresh disclosures precede scheduled reassessments; newest discoveries win.
+		// Resume known exposure or compromise before unrelated disclosures. A
+		// policy reload or command deadline must not bury unfinished response in
+		// a large fresh-feed backlog. The fairness turn above still applies.
+		urgentI, urgentJ := urgentDeferred(eligible[i]), urgentDeferred(eligible[j])
+		if urgentI != urgentJ {
+			return urgentI
+		}
+		// Other fresh disclosures precede routine reassessments; newest wins.
 		pi, pj := eligible[i].Status == "pending", eligible[j].Status == "pending"
 		if pi != pj {
 			return pi
@@ -346,6 +353,19 @@ func (e *Engine) ProcessOne(ctx context.Context) (bool, error) {
 	}
 	return true, nil
 }
+
+func urgentDeferred(in *store.Incident) bool {
+	if in.Status != "deferred" || len(in.History) == 0 {
+		return false
+	}
+	switch in.History[len(in.History)-1].Decision.Assessment {
+	case "exposed", "suspected_compromise", "confirmed_compromise":
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 	ctx, cancel := context.WithTimeout(parent, config.Seconds(e.Config.IncidentTimeoutSeconds))
 	defer cancel()
