@@ -121,7 +121,7 @@ func TestApplicabilitySchemaAndProviderRequests(t *testing.T) {
 				if !strings.Contains(observation, `"applicability_required":true`) {
 					t.Error("request lost applicability requirement")
 				}
-				for _, boundary := range []string{"Most incoming CVEs will not affect this server", "minimum targeted read-only observations", "local presence AND the affected version/configuration", "no changes, extra scans, or monitoring-channel message", "Missing evidence stays unknown"} {
+				for _, boundary := range []string{"Most incoming CVEs will not affect this server", "minimum targeted read-only observations", "local presence AND the affected version/configuration", "no changes, extra scans, or monitoring-channel message", "Missing evidence stays unknown", "Never execute an auto-install wrapper for discovery", "command -v alone and a trusted PATH do not establish safety", "explicitly select the observed local endpoint", "empty containers field is a coverage gap"} {
 					if !strings.Contains(policy, boundary) {
 						t.Errorf("policy missing %q", boundary)
 					}

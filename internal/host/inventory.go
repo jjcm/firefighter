@@ -72,13 +72,18 @@ type inventoryProbe struct {
 	maxBytes int
 }
 
-// Collect performs fixed, read-only Linux probes with ten-second command limits
-// and bounded output. Partial inventory is returned successfully with Problems;
-// only context cancellation returns an error. It does not execute scan payloads,
-// install tools, access process environments, or inspect container secrets.
+// Collect performs fixed Linux observation probes with ten-second command
+// limits and bounded output. Partial inventory is returned successfully with
+// Problems; only context cancellation returns an error. It does not invoke
+// container clients, install tools, access process environments, or inspect
+// container secrets. Container workload coverage remains explicitly incomplete.
 func Collect(ctx context.Context) (Snapshot, error) {
+	return collectInventory(ctx, runtime.GOOS, resolveExecutable, runInventoryProbe)
+}
+
+func collectInventory(ctx context.Context, platform string, resolve func(string) (string, error), run func(context.Context, inventoryProbe) protocol.ActionResult) (Snapshot, error) {
 	snapshot := Snapshot{
-		CollectedAt: time.Now().UTC(), Platform: runtime.GOOS,
+		CollectedAt: time.Now().UTC(), Platform: platform,
 		Architecture: runtime.GOARCH, EffectiveUID: os.Geteuid(),
 		IsRoot: os.Geteuid() == 0, Probes: []ProbeStatus{}, Problems: []Problem{},
 	}
@@ -90,7 +95,7 @@ func Collect(ctx context.Context) (Snapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return snapshot, err
 	}
-	if runtime.GOOS != "linux" {
+	if platform != "linux" {
 		snapshot.Problems = append(snapshot.Problems, Problem{"platform", "unsupported", "host inventory requires Linux; no platform probes were executed"})
 		return snapshot, nil
 	}
@@ -103,22 +108,25 @@ func Collect(ctx context.Context) (Snapshot, error) {
 	}
 	snapshot.OSRelease = parseOSRelease(release)
 	for _, name := range []string{"trivy", "grype", "clamscan", "debsums", "needrestart"} {
-		path, err := resolveExecutable(name)
+		path, err := resolve(name)
 		snapshot.Scanners = append(snapshot.Scanners, ToolStatus{Name: name, Available: err == nil, Path: path})
 	}
+	// A runtime client's "list" command can trigger an installer or socket
+	// activation, and its saved context can point off-host. Keep discovery
+	// passive; targeted runtime inspection belongs to an evidenced model action.
+	snapshot.Problems = append(snapshot.Problems, Problem{"containers", "not_collected", "Container workloads were not enumerated: automatic runtime client calls can install software, activate daemons, or use remote contexts. Package, process, and service observations remain available; container absence is not established."})
 	probes := []inventoryProbe{
 		{"kernel", []string{"uname", "-sr"}, 4 << 10},
 		{"processes", []string{"ps", "-eo", "pid,ppid,user,comm"}, 256 << 10},
 		{"listeners", []string{"ss", "-lntup"}, 256 << 10},
 		{"services", []string{"systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain"}, 256 << 10},
-		{"containers", []string{"docker", "ps", "--no-trunc", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}"}, 256 << 10},
 	}
-	if _, err := resolveExecutable("ss"); err != nil {
-		if _, netstatErr := resolveExecutable("netstat"); netstatErr == nil {
+	if _, err := resolve("ss"); err != nil {
+		if _, netstatErr := resolve("netstat"); netstatErr == nil {
 			probes[2].argv = []string{"netstat", "-lntup"}
 		}
 	}
-	manager, packageArgs := selectPackageManager()
+	manager, packageArgs := selectPackageManager(resolve)
 	snapshot.PackageManager = manager
 	if manager == "" {
 		snapshot.Problems = append(snapshot.Problems, Problem{"packages", "tool_unavailable", "no supported package inventory tool found (dpkg-query, rpm, apk)"})
@@ -136,8 +144,7 @@ func Collect(ctx context.Context) (Snapshot, error) {
 		wg.Add(1)
 		go func(i int, probe inventoryProbe) {
 			defer wg.Done()
-			runner := NewRunner(Config{MaxTimeout: 10 * time.Second, MaxOutputBytes: probe.maxBytes})
-			results[i] = runner.Run(ctx, protocol.Action{ID: "inventory-" + probe.name, Kind: "command", Argv: probe.argv, TimeoutSeconds: 10, Reason: "read-only host inventory"})
+			results[i] = run(ctx, probe)
 		}(i, probe)
 	}
 	wg.Wait()
@@ -167,8 +174,6 @@ func Collect(ctx context.Context) (Snapshot, error) {
 			snapshot.ListeningSockets = result.Output
 		case "services":
 			snapshot.Services = result.Output
-		case "containers":
-			snapshot.Containers = result.Output
 		case "packages":
 			if result.ExitCode == 0 {
 				snapshot.Packages = parsePackages(manager, result.Output, result.Truncated)
@@ -180,7 +185,12 @@ func Collect(ctx context.Context) (Snapshot, error) {
 	return snapshot, ctx.Err()
 }
 
-func selectPackageManager() (string, []string) {
+func runInventoryProbe(ctx context.Context, probe inventoryProbe) protocol.ActionResult {
+	runner := NewRunner(Config{MaxTimeout: 10 * time.Second, MaxOutputBytes: probe.maxBytes})
+	return runner.Run(ctx, protocol.Action{ID: "inventory-" + probe.name, Kind: "command", Argv: probe.argv, TimeoutSeconds: 10, Reason: "read-only host inventory"})
+}
+
+func selectPackageManager(resolve func(string) (string, error)) (string, []string) {
 	for _, candidate := range []struct {
 		name string
 		argv []string
@@ -189,7 +199,7 @@ func selectPackageManager() (string, []string) {
 		{"rpm", []string{"rpm", "-qa", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n"}},
 		{"apk", []string{"apk", "info", "-v"}},
 	} {
-		if _, err := resolveExecutable(candidate.argv[0]); err == nil {
+		if _, err := resolve(candidate.argv[0]); err == nil {
 			return candidate.name, candidate.argv
 		}
 	}

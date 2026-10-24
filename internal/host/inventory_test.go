@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/jjcm/firefighter/internal/protocol"
 )
 
 func TestParsePackageFixtures(t *testing.T) {
@@ -68,5 +71,64 @@ func TestCollectUnsupportedPlatformReturnsPartialEvidence(t *testing.T) {
 	snapshot, err := Collect(context.Background())
 	if err != nil || len(snapshot.Probes) != 0 || len(snapshot.Problems) == 0 || snapshot.Problems[len(snapshot.Problems)-1].Kind != "unsupported" {
 		t.Fatalf("unsupported platform was not explicit: %+v %v", snapshot, err)
+	}
+}
+
+func TestInventoryNeverInvokesInstalledContainerClients(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture executables use a Unix shell")
+	}
+	dir := t.TempDir()
+	// All runtime clients are executable and would write the marker if called.
+	// The same fixture supplies passive evidence of an installed, running Docker
+	// deployment, so omission cannot be explained by a missing client or runtime.
+	script := `#!/bin/sh
+case "${0##*/}" in
+docker|lxc|lxd) printf 'runtime client invoked\n' > "${0%/*}/runtime-invoked" ;;
+uname) printf 'Linux fixture\n' ;;
+ps) printf 'PID PPID USER COMMAND\n41 1 root dockerd\n' ;;
+ss) printf 'Netid State Local Address:Port\n' ;;
+systemctl) printf 'docker.service loaded active running Docker daemon\n' ;;
+dpkg-query) printf 'docker.io\t1.0\tamd64\tinstalled\nlxd-installer\t15\tall\tinstalled\n' ;;
+apt) printf 'Listing...\n' ;;
+*) exit 2 ;;
+esac
+`
+	for _, name := range []string{"docker", "lxc", "lxd", "uname", "ps", "ss", "systemctl", "dpkg-query", "apt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolve := func(name string) (string, error) {
+		path := filepath.Join(dir, name)
+		_, err := os.Stat(path)
+		return path, err
+	}
+	run := func(ctx context.Context, probe inventoryProbe) protocol.ActionResult {
+		probe.argv = append([]string(nil), probe.argv...)
+		probe.argv[0] = filepath.Join(dir, probe.argv[0])
+		return runInventoryProbe(ctx, probe)
+	}
+	snapshot, err := collectInventory(context.Background(), "linux", resolve, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runtime-invoked")); !os.IsNotExist(err) {
+		t.Fatalf("inventory executed a container client: %v", err)
+	}
+	if !strings.Contains(snapshot.Processes, "dockerd") || !strings.Contains(snapshot.Services, "docker.service") || len(snapshot.Packages) != 2 || snapshot.PackageManager != "dpkg" {
+		t.Fatalf("passive runtime evidence was lost: %+v", snapshot)
+	}
+	if snapshot.Containers != "" {
+		t.Fatal("inventory claimed to enumerate container workloads")
+	}
+	coverageGap := false
+	for _, problem := range snapshot.Problems {
+		if problem.Probe == "containers" && problem.Kind == "not_collected" && strings.Contains(problem.Detail, "container absence is not established") {
+			coverageGap = true
+		}
+	}
+	if !coverageGap {
+		t.Fatal("omitted container enumeration did not declare its coverage gap")
 	}
 }
