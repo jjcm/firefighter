@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -406,9 +407,6 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 		if err := protocol.ValidateMemoryUpdates(decision.MemoryUpdates); err != nil {
 			return e.finish(in, "deferred", "Planner returned invalid memory updates", err, nil)
 		}
-		if len(decision.MemoryUpdates) > 0 && len(decision.Actions) > 0 {
-			return e.finish(in, "deferred", "Memory updates require observed results, without pending actions", errors.New("memory updates with pending actions"), nil)
-		}
 		for _, action := range decision.Actions {
 			if err = e.Runner.Validate(action); err != nil {
 				return e.finish(in, "deferred", "Planner returned an invalid action", err, nil)
@@ -424,9 +422,31 @@ func (e *Engine) investigate(parent context.Context, in *store.Incident) error {
 				}
 			}
 		}
+		// Notes submitted alongside actions cannot reflect their results. Drop
+		// only these otherwise-valid notes, before persistence or execution, so
+		// notebook timing does not block valid investigation or remediation.
+		discardedUpdates := 0
+		if len(decision.Actions) > 0 {
+			discardedUpdates = len(decision.MemoryUpdates)
+			decision.MemoryUpdates = nil
+		}
 		// Persist the decision before any commands. Scrub model text before storing or reporting.
 		safeDecision := e.cleanDecision(decision)
 		e.mu.Lock()
+		if discardedUpdates > 0 {
+			// Record the omission, never the discarded keys, text, or evidence.
+			err = e.Store.Append("memory_updates_discarded", in.ID, map[string]interface{}{"count": discardedUpdates, "reason": "pending_actions"})
+			if err != nil {
+				e.mu.Unlock()
+				return err
+			}
+			if !slices.Contains(in.RecoveryNotes, discardedMemoryUpdateNote) {
+				in.RecoveryNotes = append(in.RecoveryNotes, discardedMemoryUpdateNote)
+			}
+			if !slices.Contains(notes, discardedMemoryUpdateNote) {
+				notes = append(notes, discardedMemoryUpdateNote)
+			}
+		}
 		in.History = append(in.History, protocol.Turn{Decision: safeDecision})
 		if len(in.History) > 16 {
 			in.History = in.History[len(in.History)-16:]

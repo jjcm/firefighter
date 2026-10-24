@@ -14,6 +14,8 @@ import (
 	"github.com/jjcm/firefighter/internal/store"
 )
 
+const discardedMemoryUpdateNote = "An earlier decision bundled memory updates with pending actions. Those updates were discarded and were not saved. Inspect the actual action results before proposing any replacement notes in a decision with no actions; never assume a planned action succeeded."
+
 // These records are observations supplied in the planner's data message. They
 // never enter operator instructions or provide authority to execute commands.
 type memoryContext struct {

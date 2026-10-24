@@ -15,6 +15,7 @@ import (
 	"github.com/jjcm/firefighter/internal/config"
 	"github.com/jjcm/firefighter/internal/host"
 	"github.com/jjcm/firefighter/internal/memory"
+	"github.com/jjcm/firefighter/internal/planner"
 	"github.com/jjcm/firefighter/internal/protocol"
 	"github.com/jjcm/firefighter/internal/store"
 )
@@ -301,20 +302,18 @@ func TestMemoryPeriodicHostReviewsForceNewInventory(t *testing.T) {
 	}
 }
 
-func TestMemoryRejectsActionBearingAndUnverifiedUpdates(t *testing.T) {
+func TestMemoryRejectsInvalidAndUnverifiedUpdates(t *testing.T) {
 	for _, tc := range []struct {
-		name                        string
-		action, observe, invalidTTL bool
-		assessment                  string
+		name               string
+		action, invalidTTL bool
+		assessment         string
 	}{
-		{"action-bearing", true, false, false, "unknown"},
-		{"action-bearing-observe", true, true, false, "unknown"},
-		{"unverified-remediation", false, false, false, "remediated"},
-		{"invalid-ttl", false, false, true, "not_affected"},
+		{"unverified-remediation", false, false, "remediated"},
+		{"invalid-ttl", false, true, "not_affected"},
+		{"invalid-ttl-with-action", true, true, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, dir, runner := fixtureEngine(t)
-			e.Config.Observe = tc.observe
 			in := addIncident(e, "pending")
 			e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
 				update := memoryUpdate("premature-conclusion", "All fixed")
@@ -323,13 +322,164 @@ func TestMemoryRejectsActionBearingAndUnverifiedUpdates(t *testing.T) {
 				}
 				d := protocol.Decision{Done: true, Assessment: tc.assessment, Summary: "Premature conclusion", MemoryUpdates: []protocol.MemoryUpdate{update}}
 				if tc.action {
-					d.Actions = []protocol.Action{{ID: "not-yet-executed", Kind: "command", Argv: []string{"/bin/true"}, Reason: "Potential change", Mutates: true}}
+					d.Done = false
+					d.Actions = []protocol.Action{{ID: "not-yet-executed", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Reason: "Potential change", Mutates: true}}
 				}
 				return d, nil
 			})
 			processMemoryIncident(t, e)
 			if len(readState(t, dir).Memory.Notes) != 0 || in.Status != "deferred" || len(runner.called()) != 0 {
 				t.Fatalf("invalid conclusion persisted or acted on: notes=%v status=%s calls=%v", e.State.Memory.Notes, in.Status, runner.called())
+			}
+		})
+	}
+}
+
+func TestMemoryMixedDecisionRunsActionsAndReconsidersNotesAfterResults(t *testing.T) {
+	e, dir, _ := fixtureEngine(t)
+	in := addIncident(e, "pending")
+	const premature = "premature-note-content-must-not-be-retained"
+	e.State.Memory.Apply([]protocol.MemoryUpdate{memoryUpdate("existing", "Previously observed fact")}, "earlier", time.Now().UTC())
+	checkDiscarded := func() {
+		t.Helper()
+		saved := readState(t, dir)
+		if len(saved.Memory.Notes) != 1 || saved.Memory.Notes["existing"].Text != "Previously observed fact" {
+			t.Fatalf("mixed update was applied: %+v", saved.Memory.Notes)
+		}
+		if len(saved.Incidents[in.ID].RecoveryNotes) != 1 || saved.Incidents[in.ID].RecoveryNotes[0] != discardedMemoryUpdateNote {
+			t.Fatal("omission recovery note was not durably checkpointed")
+		}
+		for _, filename := range []string{"state.json", "audit.jsonl"} {
+			b, err := os.ReadFile(filepath.Join(dir, filename))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(b), premature) {
+				t.Fatalf("discarded memory content retained in %s", filename)
+			}
+		}
+	}
+	runner := &memoryCheckingRunner{before: func(protocol.Action) { checkDiscarded() }}
+	e.Runner = runner
+	rounds := 0
+	e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
+		rounds++
+		var d protocol.Decision
+		if rounds == 1 {
+			d = protocol.Decision{Summary: "Update fixture package", Assessment: "exposed", Evidence: []string{}, Actions: []protocol.Action{{ID: "fix", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Apply fixture fix"}}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("premature", premature), {Operation: "delete", Key: "existing", Evidence: []string{}, Tags: []string{}}}}
+		} else {
+			checkDiscarded()
+			if len(req.RecoveryNotes) != 1 || req.RecoveryNotes[0] != discardedMemoryUpdateNote {
+				t.Fatalf("next planner turn lacks omission feedback: %v", req.RecoveryNotes)
+			}
+			if len(req.History) != 1 || len(req.History[0].Decision.MemoryUpdates) != 0 || len(req.History[0].Results) != 2 || req.History[0].Results[1].ActionID != "fix-verify" {
+				t.Fatalf("next planner turn lost actual results or retained premature notes: %+v", req.History)
+			}
+			encoded, err := json.Marshal(req)
+			if err != nil || strings.Contains(string(encoded), premature) {
+				t.Fatalf("discarded note entered the next model request: %v", err)
+			}
+			d = protocol.Decision{Summary: "Observed successful fixture fix and verification", Assessment: "remediated", Done: true, Evidence: []string{}, Actions: []protocol.Action{}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("observed", "Fixture fix passed its verification")}}
+		}
+		// Exercise the actual parser boundary that previously rejected this reply.
+		b, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return planner.ParseDecision(b, e.Config.MaxActionsPerRound)
+	})
+	processMemoryIncident(t, e)
+	if rounds != 2 || in.Status != "completed" || in.LastError != "" || !reflect.DeepEqual(runner.calls, []string{"fix", "fix-verify"}) {
+		t.Fatalf("mixed decision stalled valid work: rounds=%d status=%s error=%q calls=%v", rounds, in.Status, in.LastError, runner.calls)
+	}
+	saved := readState(t, dir)
+	if len(saved.Memory.Notes) != 2 || saved.Memory.Notes["observed"].Text != "Fixture fix passed its verification" {
+		t.Fatalf("actionless observed note was not saved: %+v", saved.Memory.Notes)
+	}
+	audit, err := os.ReadFile(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	omissions := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(audit)), "\n") {
+		var record store.Record
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Type == "memory_updates_discarded" {
+			omissions++
+			var data map[string]interface{}
+			if err := json.Unmarshal(record.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if len(data) != 2 || data["count"] != float64(2) || data["reason"] != "pending_actions" {
+				t.Fatalf("omission audit must contain only count and reason: %v", data)
+			}
+		}
+	}
+	if omissions != 1 || strings.Contains(string(audit), premature) {
+		t.Fatalf("unexpected omission audit: count=%d", omissions)
+	}
+}
+
+func TestMemoryMixedDecisionObserveModeDiscardsNotesWithoutExecution(t *testing.T) {
+	e, dir, runner := fixtureEngine(t)
+	e.Config.Observe = true
+	in := addIncident(e, "pending")
+	e.Planner = plannerFunc(func(context.Context, protocol.Request) (protocol.Decision, error) {
+		return protocol.Decision{Summary: "Propose fixture fix", Assessment: "exposed", Actions: []protocol.Action{{ID: "fix", Kind: "command", Argv: []string{"/bin/true"}, Verify: []string{"/bin/true"}, Mutates: true, Reason: "Fix fixture"}}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("premature", "Planned fix succeeded")}}, nil
+	})
+	processMemoryIncident(t, e)
+	saved := readState(t, dir)
+	if in.Status != "observed" || len(runner.called()) != 0 || len(saved.Memory.Notes) != 0 || len(saved.Incidents[in.ID].History[0].Decision.MemoryUpdates) != 0 {
+		t.Fatalf("observe mode executed work or saved premature notes: status=%s calls=%v memory=%+v", in.Status, runner.called(), saved.Memory)
+	}
+}
+
+func TestMemoryMixedNotesStayDiscardedAcrossFailureAndRestart(t *testing.T) {
+	for _, exitCode := range []int{0, 1} {
+		t.Run(fmt.Sprintf("inspection-exit-%d", exitCode), func(t *testing.T) {
+			e, dir, runner := fixtureEngine(t)
+			e.Config.MaxRounds = 2
+			in := addIncident(e, "pending")
+			runner.exitCode["inspect"] = exitCode
+			rounds := 0
+			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
+				rounds++
+				if rounds > 1 && (len(req.History[0].Results) != 1 || req.History[0].Results[0].ExitCode != exitCode || len(req.RecoveryNotes) != 1) {
+					t.Fatalf("replan lost execution result or omission feedback: %+v", req)
+				}
+				return protocol.Decision{Summary: "Inspect fixture", Assessment: "unknown", Actions: []protocol.Action{{ID: "inspect", Kind: "command", Argv: []string{"/bin/true"}, Reason: "Check fixture"}}, MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("premature", "Unobserved result must not survive")}}, nil
+			})
+			processMemoryIncident(t, e)
+			saved := readState(t, dir)
+			if in.Status != "deferred" || in.LastError != "round budget exhausted" || len(runner.called()) != 2 || len(saved.Memory.Notes) != 0 || len(saved.Incidents[in.ID].RecoveryNotes) != 1 {
+				t.Fatalf("round exhaustion retained notes or lost progress: status=%s error=%q calls=%v notes=%v recovery=%v", in.Status, in.LastError, runner.called(), saved.Memory.Notes, saved.Incidents[in.ID].RecoveryNotes)
+			}
+			if err := e.Store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, state, err := store.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			e.Store, e.State = reopened, state
+			state.Incidents[in.ID].NextAttempt = time.Time{}
+			e.Planner = plannerFunc(func(_ context.Context, req protocol.Request) (protocol.Decision, error) {
+				if len(req.History) != 2 || req.History[1].Results[0].ExitCode != exitCode || req.RecoveryNotes[0] != discardedMemoryUpdateNote {
+					t.Fatalf("restart lost actual results or persisted omission feedback: %+v", req)
+				}
+				encoded, err := json.Marshal(req)
+				if err != nil || strings.Contains(string(encoded), "Unobserved result must not survive") {
+					t.Fatalf("discarded note reached restarted planner: %v", err)
+				}
+				observed := fmt.Sprintf("Inspection returned exit code %d; assessment remains unresolved", exitCode)
+				return protocol.Decision{Summary: "Record actual inspection outcome", Assessment: "unknown", FollowUp: "Further investigation needed", MemoryUpdates: []protocol.MemoryUpdate{memoryUpdate("observed", observed)}}, nil
+			})
+			processMemoryIncident(t, e)
+			if notes := readState(t, dir).Memory.Notes; len(notes) != 1 || notes["observed"].Text == "" || len(runner.called()) != 2 {
+				t.Fatalf("restart replayed work or did not save actionless observation: notes=%v calls=%v", notes, runner.called())
 			}
 		})
 	}

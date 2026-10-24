@@ -20,6 +20,7 @@ func TestMemoryDecisionParsing(t *testing.T) {
 	for _, body := range []string{
 		validDecision, // Old command planners need not return the new field.
 		noteDecision,
+		strings.Replace(noteDecision, `"actions":[],"done":true`, `"actions":[{"id":"inspect","kind":"command","argv":["/usr/bin/true"],"reason":"inspect","mutates":false}],"done":false`, 1),
 		strings.Replace(noteDecision, `"done":true,"follow_up":""`, `"done":false,"follow_up":"Need a fresh package inventory"`, 1),
 		`{"summary":"Removed obsolete note","assessment":"unknown","evidence":[],"actions":[],"done":true,"memory_updates":[{"operation":"delete","key":"web.deployment","text":"","evidence":[],"tags":[],"ttl_hours":0}]}`,
 	} {
@@ -36,11 +37,28 @@ func TestMemoryDecisionParsing(t *testing.T) {
 		{"unknown field", strings.Replace(noteDecision, `"ttl_hours":24`, `"ttl_hours":24,"trusted":true`, 1)},
 		{"duplicate field", strings.Replace(noteDecision, `"ttl_hours":24`, `"ttl_hours":24,"ttl_hours":720`, 1)},
 		{"fractional ttl", strings.Replace(noteDecision, `"ttl_hours":24`, `"ttl_hours":1.5`, 1)},
-		{"notes and commands", strings.Replace(noteDecision, `"actions":[],"done":true`, `"actions":[{"id":"inspect","kind":"command","argv":["/usr/bin/true"],"reason":"inspect","mutates":false}],"done":false`, 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ParseDecision([]byte(tc.body), 8); err == nil {
 				t.Fatal("accepted invalid memory contract")
+			}
+		})
+	}
+}
+
+func TestMixedMemoryDecisionRetainsValidation(t *testing.T) {
+	body := strings.Replace(noteDecision, `"actions":[],"done":true`, `"actions":[{"id":"inspect","kind":"command","argv":["/usr/bin/true"],"reason":"inspect","mutates":false}],"done":false`, 1)
+	for _, tc := range []struct{ name, body string }{
+		{"done with actions", strings.Replace(body, `"done":false`, `"done":true`, 1)},
+		{"missing verification", strings.Replace(body, `"mutates":false`, `"mutates":true`, 1)},
+		{"invalid command", strings.Replace(body, `["/usr/bin/true"]`, `[]`, 1)},
+		{"invalid memory ttl", strings.Replace(body, `"ttl_hours":24`, `"ttl_hours":0`, 1)},
+		{"missing memory field", strings.Replace(body, `"ttl_hours":24`, `"unrecognized":24`, 1)},
+		{"unknown memory field", strings.Replace(body, `"ttl_hours":24`, `"ttl_hours":24,"trusted":true`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseDecision([]byte(tc.body), 8); err == nil {
+				t.Fatal("accepting mixed decisions weakened action or memory validation")
 			}
 		})
 	}
