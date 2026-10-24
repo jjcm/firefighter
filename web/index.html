@@ -8,7 +8,7 @@
   <title>Firefighter</title>
   <link rel="icon" type="image/svg+xml" href="/assets/flame.svg">
   <link rel="stylesheet" href="/styles.css">
-  <script src="/app.js" defer></script>
+  <script src="/app.js?v=464c39aeb29a" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -52,7 +52,7 @@
     </section>
 
     <section class="notice-panel" id="live-notices" aria-labelledby="notices-title">
-      <div class="notice-heading"><div class="section-heading"><svg class="outline-icon" viewBox="0 0 32 36" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="24" height="32" rx="3"/><path d="M9 10h14M9 17h14M9 24h9"/></g></svg><div><h2 id="notices-title">Live notice feed</h2><p>Public disclosures from one shared intake. Every client evaluates them locally.</p></div></div><span class="feed-state" id="feed-state"><span class="status-dot pending" aria-hidden="true"></span>Connecting</span></div>
+      <div class="notice-heading"><div class="section-heading"><svg class="outline-icon" viewBox="0 0 32 36" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="24" height="32" rx="3"/><path d="M9 10h14M9 17h14M9 24h9"/></g></svg><div><h2 id="notices-title">Live notice feed</h2><p>Public disclosures from one shared intake. Every client evaluates them locally.</p></div></div></div>
       <div class="feed-sources" aria-label="Active vulnerability sources"><div id="source-status-list" class="source-status-list"><p class="muted">Checking source status…</p></div></div>
       <div class="feed-controls"><div class="search-wrap"><label class="visually-hidden" for="notice-search">Search notices</label><input id="notice-search" type="search" placeholder="Search CVE, package, or advisory…" maxlength="120" autocomplete="off"><span aria-hidden="true">⌕</span></div><label class="visually-hidden" for="source-filter">Filter by source</label><select id="source-filter"><option value="">All sources</option></select><button id="refresh-notices" class="text-button" type="button">Refresh <span aria-hidden="true">↻</span></button></div>
       <div class="notice-list" id="notice-list"><div class="feed-placeholder"><span class="loading-mark" aria-hidden="true">⌁</span><p>Connecting to the shared notice feed…</p><span>Only actual published notices appear here.</span></div></div>

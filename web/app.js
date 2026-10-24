@@ -217,17 +217,6 @@
     }
   }
 
-  function renderFeedState() {
-    const status = $("feed-state");
-    let label = "Feed available";
-    let kind = "healthy";
-    if (state.feedError) { label = "Feed unavailable"; kind = "degraded"; }
-    else if (!state.status) { label = "Source status unknown"; kind = "pending"; }
-    else if (state.status.degraded) { label = "Partial source coverage"; kind = "degraded"; }
-    const dot = node("span", `status-dot ${kind}`); dot.setAttribute("aria-hidden", "true");
-    status.replaceChildren(dot, document.createTextNode(label));
-  }
-
   async function refresh() {
     if (state.loading) return;
     state.loading = true;
@@ -250,7 +239,7 @@
     } finally {
       state.loading = false;
       $("refresh-notices").disabled = false;
-      updateSourceOptions(); renderNotices(); renderSources(); renderFeedState();
+      updateSourceOptions(); renderNotices(); renderSources();
     }
   }
 
